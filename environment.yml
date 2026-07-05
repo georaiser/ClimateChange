@@ -1,0 +1,10 @@
+name: geocascade_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  # NOTE: We are using a modular installation approach.
+  # Heavy libraries (GDAL, PyTorch, LangGraph) will be installed 
+  # chapter-by-chapter rather than all at once. Check the README 
+  # inside each Chapter folder for specific installation commands.
