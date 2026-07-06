@@ -36,8 +36,8 @@ The learning process is divided into 11 sequential, academic **Chapters**, ensur
 #### `Chapter_01/`
 *   **`01_stac_multisensor_download.py`:** (Concept: Programmatic acquisition). Uses Copernicus API and AWS STAC to download multi-sensor data.
 *   **`02_atmospheric_correction.py`:** (Concept: TOA to BOA reflectance physics). Radiometric/Atmospheric correction using Python (`rasterio`/`Py6S`) and ENVI.
-*   **`03_station_ml_interpolation.py`:** (Concept: ML for missing data). Training Random Forest on weather station data to predict continuous climate surfaces.
-*   **`04_precipitation_dual_analysis`:** (Concept: R vs Python spatial analysis). CHIRPS historical anomalies and ArcGIS IsoCluster climatic zone classification.
+*   **`03_station_ml_interpolation.py`:** (Concept: ML for missing data). Training Random Forest on weather station data to predict continuous climate surfaces. **Includes automated Sensor Failure Anomaly Detection (`IsolationForest`) and manual visual QA/QC.**
+*   **`04_precipitation_dual_analysis`:** (Concept: R vs Python spatial analysis). CHIRPS historical anomalies and ArcGIS IsoCluster climatic zone classification. **Includes explicit R (`anomalize`) and ArcGIS Pro (Space-Time Pattern Mining) extreme climate event anomaly detection.**
 *   **`05_uhi_modis_mapping.py`:** (Concept: Urban microclimates). Urban Heat Island mapping over Punta Arenas using thermal data.
 
 ---
@@ -51,7 +51,7 @@ The learning process is divided into 11 sequential, academic **Chapters**, ensur
 *   **`03_xarray_ndwi_multitemporal.py`:** (Concept: Spectral indices). Mapping Grey Lake expansion across decades.
 *   **`04_pytorch_lake_segmentation.py`:** (Concept: Semantic segmentation). U-Net CNN for automated glacial lake extraction.
 *   **`05_arcpy_ndsi_snow_cover.py`:** (Concept: Snow tracking). Automated ArcGIS Pro script for NDSI mapping.
-*   **`06_multitemporal_change_detection.py`:** (Concept: Multi-temporal sensor fusion). Fusing Sentinel-1 SAR and Sentinel-2 Optical time-series data to algorithmically detect land-cover changes and glacial calving events between two dates (T1 vs T2).
+*   **`06_multitemporal_change_detection.py`:** (Concept: Multi-temporal sensor fusion). Fusing Sentinel-1 SAR and Sentinel-2 Optical time-series data to algorithmically detect land-cover changes and glacial calving events between two dates (T1 vs T2). **Includes ENVI RX Anomaly Detection and Python Time-Series analysis for predicting Glacial Lake Outburst Floods (GLOFs).**
 
 ---
 
@@ -72,7 +72,7 @@ The learning process is divided into 11 sequential, academic **Chapters**, ensur
 
 #### `Chapter_04/`
 *   **`01_maxent_modeling` (R/Python):** (Concept: Species Distribution Modeling). Map how flora/fauna will migrate as the watershed's climate shifts.
-*   **`02_vulnerability_index_mce.py`:** (Concept: Multi-Criteria Evaluation). Combine precipitation, glacial retreat, and flood risks into a "Climate Vulnerability Heatmap".
+*   **`02_vulnerability_index_mce.py`:** (Concept: Multi-Criteria Evaluation). Combine precipitation, glacial retreat, and flood risks into a "Climate Vulnerability Heatmap". **Includes Vegetation Stress/Burn Scar Anomaly Detection using R (`bfast`), ArcGIS Pro (CCDC), and manual visual interpretation.**
 
 ---
 
@@ -107,7 +107,7 @@ The learning process is divided into 11 sequential, academic **Chapters**, ensur
 
 #### `Chapter_08/`
 *   **Concept:** Disasters don't happen in isolation. We will programmatically link the models to prove cause-and-effect.
-*   **Action:** A Python framework that specifically tracks the statistical causality: *Temperature Anomaly (Ch1) → Lake Expansion (Ch2) → Altered Water Balance (Ch3) → High Vulnerability Niche Shift (Ch4).*
+*   **Action:** A Python framework that specifically tracks the statistical causality: *Temperature Anomaly (Ch1) → Lake Expansion (Ch2) → Altered Water Balance (Ch3) → High Vulnerability Niche Shift (Ch4).* **Includes multi-platform validation against manually detected events.**
 
 ### CHAPTER 9: Multi-Task PyTorch Model
 **Academic Objective:** Upgrade standard Deep Learning to advanced multi-head architectures.

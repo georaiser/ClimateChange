@@ -36,8 +36,8 @@ El proceso de aprendizaje se divide en 11 **Capítulos** académicos secuenciale
 #### `Chapter_01/`
 *   **`01_stac_multisensor_download.py`:** (Concepto: Adquisición programática). Utiliza la API de Copernicus y AWS STAC para descargar datos multisensores.
 *   **`02_atmospheric_correction.py`:** (Concepto: Física de reflectancia TOA a BOA). Corrección radiométrica/atmosférica usando Python (`rasterio`/`Py6S`) y ENVI.
-*   **`03_station_ml_interpolation.py`:** (Concepto: ML para datos faltantes). Entrenamiento de Random Forest con datos de estaciones meteorológicas para predecir superficies climáticas continuas.
-*   **`04_precipitation_dual_analysis`:** (Concepto: Análisis espacial R vs Python). Anomalías históricas CHIRPS y clasificación de zonas climáticas con ArcGIS IsoCluster.
+*   **`03_station_ml_interpolation.py`:** (Concepto: ML para datos faltantes). Entrenamiento de Random Forest con datos de estaciones meteorológicas para predecir superficies climáticas continuas. **Incluye Detección Automática de Anomalías por Falla de Sensor (`IsolationForest`) y QA/QC visual manual.**
+*   **`04_precipitation_dual_analysis`:** (Concepto: Análisis espacial R vs Python). Anomalías históricas CHIRPS y clasificación de zonas climáticas con ArcGIS IsoCluster. **Incluye detección explícita de anomalías de eventos climáticos extremos en R (`anomalize`) y ArcGIS Pro (Minería de Patrones Espacio-Temporales).**
 *   **`05_uhi_modis_mapping.py`:** (Concepto: Microclimas urbanos). Mapeo de Isla de Calor Urbana sobre Punta Arenas usando datos termales.
 
 ---
@@ -51,7 +51,7 @@ El proceso de aprendizaje se divide en 11 **Capítulos** académicos secuenciale
 *   **`03_xarray_ndwi_multitemporal.py`:** (Concepto: Índices espectrales). Mapeo de la expansión del Lago Grey a lo largo de décadas.
 *   **`04_pytorch_lake_segmentation.py`:** (Concepto: Segmentación semántica). CNN U-Net para extracción automatizada de lagos glaciares.
 *   **`05_arcpy_ndsi_snow_cover.py`:** (Concepto: Seguimiento de nieve). Script automatizado de ArcGIS Pro para mapeo NDSI.
-*   **`06_multitemporal_change_detection.py`:** (Concepto: Fusión de sensores multitemporal). Fusión de series temporales Sentinel-1 SAR y Sentinel-2 Óptico para detectar algorítmicamente cambios en la cobertura terrestre y eventos de desprendimiento glaciar entre dos fechas (T1 vs T2).
+*   **`06_multitemporal_change_detection.py`:** (Concepto: Fusión de sensores multitemporal). Fusión de series temporales Sentinel-1 SAR y Sentinel-2 Óptico para detectar algorítmicamente cambios en la cobertura terrestre y eventos de desprendimiento glaciar entre dos fechas (T1 vs T2). **Incluye Detección de Anomalías RX en ENVI y análisis de Series Temporales en Python para predecir Inundaciones por Desborde de Lagos Glaciares (GLOFs).**
 
 ---
 
@@ -72,7 +72,7 @@ El proceso de aprendizaje se divide en 11 **Capítulos** académicos secuenciale
 
 #### `Chapter_04/`
 *   **`01_maxent_modeling` (R/Python):** (Concepto: Modelado de Distribución de Especies). Mapeo de cómo migrará la flora/fauna a medida que cambia el clima de la cuenca.
-*   **`02_vulnerability_index_mce.py`:** (Concepto: Evaluación Multicriterio). Combinar precipitación, retroceso glaciar y riesgos de inundación en un "Mapa de Calor de Vulnerabilidad Climática".
+*   **`02_vulnerability_index_mce.py`:** (Concepto: Evaluación Multicriterio). Combinar precipitación, retroceso glaciar y riesgos de inundación en un "Mapa de Calor de Vulnerabilidad Climática". **Incluye Detección de Anomalías por Estrés de Vegetación/Cicatrices de Incendios usando R (`bfast`), ArcGIS Pro (CCDC) y validación manual visual.**
 
 ---
 
@@ -107,7 +107,7 @@ El proceso de aprendizaje se divide en 11 **Capítulos** académicos secuenciale
 
 #### `Chapter_08/`
 *   **Concepto:** Los desastres no ocurren de forma aislada. Vincularemos programáticamente los modelos para demostrar causa y efecto.
-*   **Acción:** Un framework de Python que rastrea específicamente la causalidad estadística: *Anomalía de Temperatura (Ch1) → Expansión del Lago (Ch2) → Balance Hídrico Alterado (Ch3) → Cambio de Nicho de Alta Vulnerabilidad (Ch4).*
+*   **Acción:** Un framework de Python que rastrea específicamente la causalidad estadística: *Anomalía de Temperatura (Ch1) → Expansión del Lago (Ch2) → Balance Hídrico Alterado (Ch3) → Cambio de Nicho de Alta Vulnerabilidad (Ch4).* **Incluye validación multiplataforma comparando las anomalías detectadas automáticamente con la detección manual experta.**
 
 ### CAPÍTULO 9: Modelo PyTorch Multitarea
 **Objetivo Académico:** Actualizar el Deep Learning estándar a arquitecturas avanzadas multicabezal.

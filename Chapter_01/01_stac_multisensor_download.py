@@ -154,8 +154,8 @@ def main():
         s2_dir = os.path.join(OUTPUT_DIR, f"sentinel2_{s2_item.id}")
         os.makedirs(s2_dir, exist_ok=True)
         
-        # We download 10m resolution bands: B02 (Blue), B03 (Green), B04 (Red), B08 (NIR)
-        target_bands = ["B02", "B03", "B04", "B08"]
+        # We download 10m bands (B02, B03, B04, B08) and the 20m SWIR band (B11) for Aerosols/NDSI
+        target_bands = ["B02", "B03", "B04", "B08", "B11"]
         for band in target_bands:
             if band in s2_item.assets:
                 url = s2_item.assets[band].href

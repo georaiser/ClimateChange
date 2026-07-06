@@ -115,7 +115,26 @@ def main():
         band_filename = os.path.basename(tif)
         out_tif = os.path.join(scene_out_dir, f"BOA_{band_filename}")
         
-        # Execute the DOS1 correction on each band
+        # IMPORTANT PHYSICS NOTE:
+        # Dark Object Subtraction (DOS1) is designed to remove Rayleigh/Mie scattering (haze).
+        # This scattering heavily affects visible/NIR light (B01 - B08A) but is physically 
+        # inappropriate for other bands:
+        # - SWIR (B11, B12): Wavelengths are too large; negligible path radiance (No haze).
+        # - Water Vapor (B09): Measures atmospheric absorption; shouldn't be corrected for surface reflectance.
+        # - Cirrus (B10): Completely absorbed by lower atmosphere; only sees high clouds.
+        
+        bands_to_skip = ["B09", "B10", "B11", "B12"]
+        
+        skip_band = any(skip_str in band_filename for skip_str in bands_to_skip)
+        
+        if skip_band:
+            print(f"       [{band_filename}] ⏭️ Skipped DOS1. Physically inappropriate for this spectral range.")
+            # Just copy the original file over as pseudo-BOA
+            import shutil
+            shutil.copy(tif, out_tif)
+            continue
+            
+        # Execute the DOS1 correction on visible/NIR bands
         apply_dos1_correction(tif, out_tif)
         
     print("\n[SUCCESS] Chapter 1 Atmospheric Correction complete.")
