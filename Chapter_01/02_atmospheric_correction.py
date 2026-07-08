@@ -2,25 +2,25 @@
 Chapter 1: 02_atmospheric_correction.py
 
 Academic Objective:
-Sensors record Top of Atmosphere (TOA) radiance, which includes atmospheric 
-scattering (haze). True surface analysis requires Bottom of Atmosphere (BOA) reflectance.
-While modern STAC pipelines (like our Sentinel-2 L2A download) provide pre-corrected 
-BOA data via Sen2Cor, understanding the physics of correction is mandatory.
+This script demonstrates the COST Model (Chavez, 1996), a highly advanced empirical 
+atmospheric correction algorithm. It improves upon standard Dark Object Subtraction (DOS1)
+by not only subtracting atmospheric haze (path radiance), but also estimating 
+atmospheric absorption (transmittance) using the cosine of the Solar Zenith Angle.
 
-This script demonstrates Dark Object Subtraction (DOS1), a classic, image-based 
-atmospheric correction model. DOS1 assumes that within an image, there are pixels 
-in complete shadow or deep water that should have zero reflectance. Any recorded 
-signal above zero in these pixels is attributed to atmospheric path radiance (haze).
-By subtracting this minimum value, we mathematically remove the haze constant.
+This makes the Python empirical model behave much closer to rigorous physical 
+models like ENVI FLAASH, accurately restoring the brightness of highly reflective surfaces.
 
 Dependencies:
-mamba install -n geocascade_env -c conda-forge rasterio numpy
+mamba install -n geocascade_env -c conda-forge rasterio numpy pystac-client planetary-computer
 """
 
 import os
 import glob
 import rasterio
 import numpy as np
+import math
+from pystac_client import Client
+import planetary_computer as pc
 
 # ==========================================
 # 1. Configuration Paths
@@ -31,55 +31,60 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "data", "processed", "boa_corrected")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def find_latest_sentinel_dir():
-    """Finds the Sentinel-2 directory downloaded by script 01."""
-    s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_*"))
+    s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_l1c_*"))
     if not s2_dirs:
-        raise FileNotFoundError("No Sentinel-2 raw data found. Run script 01 first.")
-    # Return the most recently modified directory
+        raise FileNotFoundError("No Sentinel-2 L1C raw data found. Run script 01 first.")
     return max(s2_dirs, key=os.path.getmtime)
 
+def fetch_stac_metadata(item_id):
+    print(f"[INFO] Fetching Solar Zenith for {item_id} from STAC API...")
+    catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
+    search = catalog.search(collections=["sentinel-2-l2a"], ids=[item_id])
+    items = list(search.items())
+    if not items:
+        return {"s2:mean_solar_zenith": 45.0}
+    return items[0].properties
 
 # ==========================================
-# 2. Dark Object Subtraction (DOS1) Logic
+# 2. COST Model Correction (Improved DOS)
 # ==========================================
-def apply_dos1_correction(input_raster, output_raster):
-    """
-    Applies Dark Object Subtraction to a single raster band.
-    1. Reads the raster.
-    2. Finds the minimum valid value (the "Dark Object").
-    3. Subtracts this value from all pixels (clipping at 0 to avoid negatives).
-    4. Saves the atmospherically corrected raster.
-    """
+def apply_cost_correction(input_raster, output_raster, zenith_deg):
     with rasterio.open(input_raster) as src:
         meta = src.meta.copy()
-        
-        # Read the first band as a numpy array
-        # Note: We use masked=True to ignore nodata (usually 0 at the image borders)
         band_data = src.read(1, masked=True)
         
-        # 1. Identify the Dark Object (Minimum value excluding NoData)
-        # In optical remote sensing, deep water often acts as a dark object.
-        dark_object_value = band_data.min()
+        # 1. Identify the Dark Object (Using 1st percentile to avoid outlier 0s)
+        # Chavez (1988) assumes the dark object is rarely 0%, usually ~1% reflectance.
+        # Since Sentinel-2 is scaled by 10000, 1% reflectance = 100.
+        valid_pixels = band_data.compressed()
+        if len(valid_pixels) == 0:
+            dark_pixel = 0
+        else:
+            dark_pixel = np.percentile(valid_pixels, 1)
+            
+        haze = max(0, dark_pixel - 100)
         
         band_name = os.path.basename(input_raster)
-        print(f"       [{band_name}] Dark Object Value (Haze): {dark_object_value}")
+        print(f"       [{band_name}] Dark Pixel: {dark_pixel:.0f} | Haze Subtracted: {haze:.0f}")
         
-        # 2. Subtract the haze value
-        # Subtracting haze mathematically corrects TOA to pseudo-BOA.
-        corrected_data = band_data - dark_object_value
+        # 2. Subtract the haze value (Path Radiance)
+        corrected_data = band_data - haze
         
-        # 3. Ensure no negative values (physical impossibility for reflectance)
-        corrected_data = np.clip(corrected_data, 0, None)
+        # 3. Apply the COST Transmittance Model (Chavez, 1996)
+        # Atmospheric Transmittance (T) is approximated as cos(Solar Zenith)
+        transmittance = math.cos(math.radians(zenith_deg))
         
-        # 4. Write the corrected data to the new file
-        # Update metadata to ensure we maintain the correct datatype and CRS
+        # This division raises the reflectance of bright pixels, modeling atmospheric absorption!
+        corrected_data = corrected_data / transmittance
+        
+        # 4. Ensure no negative values and clip to valid uint16 range
+        corrected_data = np.clip(corrected_data, 0, 65535)
+        
         meta.update(dtype=rasterio.uint16, count=1, compress='lzw')
-        
         with rasterio.open(output_raster, 'w', **meta) as dst:
-            # Write the filled array (putting nodata back where the mask is)
             dst.write(corrected_data.filled(0).astype(rasterio.uint16), 1)
             
-    print(f"       [{band_name}] ✔️ DOS1 Correction Applied and Saved.")
+    print(f"       [{band_name}] ✔️ COST Correction Applied (Transmittance: {transmittance:.3f})")
 
 
 # ==========================================
@@ -87,27 +92,30 @@ def apply_dos1_correction(input_raster, output_raster):
 # ==========================================
 def main():
     print("==================================================")
-    print(" GEOCASCADE PIPELINE - ATMOSPHERIC CORRECTION (DOS1)")
+    print(" GEOCASCADE PIPELINE - ATMOSPHERIC CORRECTION (COST)")
     print("==================================================")
     
     try:
         s2_dir = find_latest_sentinel_dir()
-        print(f"[INFO] Found raw Sentinel-2 directory: {os.path.basename(s2_dir)}")
+        scene_name = os.path.basename(s2_dir)
+        item_id = scene_name.replace("sentinel2_", "")
+        print(f"[INFO] Found raw Sentinel-2 directory: {scene_name}")
     except FileNotFoundError as e:
         print(f"[ERROR] {e}")
         return
 
-    # Process all TIF files (B02, B03, B04, B08)
     tif_files = glob.glob(os.path.join(s2_dir, "*.tif"))
-    
     if not tif_files:
         print("[ERROR] No .tif files found in the Sentinel-2 directory.")
         return
         
-    print(f"\n[INFO] Applying Dark Object Subtraction (DOS1) to {len(tif_files)} bands...")
+    # Fetch Solar Zenith Angle for the COST model
+    props = fetch_stac_metadata(item_id)
+    zenith_deg = props.get("s2:mean_solar_zenith", 45.0)
+    print(f"       -> Mean Solar Zenith Angle: {zenith_deg:.2f}°")
+        
+    print(f"\n[INFO] Applying COST Model (Improved DOS) to {len(tif_files)} bands...")
     
-    # Create a specific output folder for this scene
-    scene_name = os.path.basename(s2_dir)
     scene_out_dir = os.path.join(OUTPUT_DIR, scene_name)
     os.makedirs(scene_out_dir, exist_ok=True)
     
@@ -116,26 +124,17 @@ def main():
         out_tif = os.path.join(scene_out_dir, f"BOA_{band_filename}")
         
         # IMPORTANT PHYSICS NOTE:
-        # Dark Object Subtraction (DOS1) is designed to remove Rayleigh/Mie scattering (haze).
-        # This scattering heavily affects visible/NIR light (B01 - B08A) but is physically 
-        # inappropriate for other bands:
-        # - SWIR (B11, B12): Wavelengths are too large; negligible path radiance (No haze).
-        # - Water Vapor (B09): Measures atmospheric absorption; shouldn't be corrected for surface reflectance.
-        # - Cirrus (B10): Completely absorbed by lower atmosphere; only sees high clouds.
-        
+        # Haze correction is inappropriate for SWIR (B11, B12), Water Vapor (B09), and Cirrus (B10).
         bands_to_skip = ["B09", "B10", "B11", "B12"]
-        
         skip_band = any(skip_str in band_filename for skip_str in bands_to_skip)
         
         if skip_band:
-            print(f"       [{band_filename}] ⏭️ Skipped DOS1. Physically inappropriate for this spectral range.")
-            # Just copy the original file over as pseudo-BOA
+            print(f"       [{band_filename}] ⏭️ Skipped COST correction. Physically inappropriate for this wavelength.")
             import shutil
             shutil.copy(tif, out_tif)
             continue
             
-        # Execute the DOS1 correction on visible/NIR bands
-        apply_dos1_correction(tif, out_tif)
+        apply_cost_correction(tif, out_tif, zenith_deg)
         
     print("\n[SUCCESS] Chapter 1 Atmospheric Correction complete.")
     print(f"[OUTPUT] Corrected data saved to: {scene_out_dir}")

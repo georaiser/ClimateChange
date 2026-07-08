@@ -32,15 +32,15 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "data", "processed_envi")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def find_latest_sentinel_dir():
-    s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_*"))
+    s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_l1c_*"))
     if not s2_dirs:
-        raise FileNotFoundError("No Sentinel-2 raw data found. Run script 01 first.")
+        raise FileNotFoundError("No Sentinel-2 L1C raw data found. Run script 01 first.")
     return max(s2_dirs, key=os.path.getmtime)
 
 def fetch_stac_metadata(item_id):
     print(f"[INFO] Step 0: Fetching metadata for {item_id} from STAC API...")
     catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
-    search = catalog.search(collections=["sentinel-2-l2a"], ids=[item_id])
+    search = catalog.search(collections=["sentinel-2-l1c"], ids=[item_id])
     items = list(search.items())
     if not items:
         print("[WARNING] Could not fetch metadata. Using default Patagonian summer values.")
@@ -132,7 +132,9 @@ def main():
     with open(hdr_file, 'a') as hdr:
         hdr.write("wavelength units = Nanometers\n")
         hdr.write("sensor type = Sentinel-2\n")
+        hdr.write(f"acquisition time = {date_str}\n")
         hdr.write("data ignore value = 0\n")
+        hdr.write("band names = {B02 (Blue), B03 (Green), B04 (Red), B08 (NIR), B11 (SWIR)}\n")
         hdr.write("wavelength = {490.0, 560.0, 665.0, 842.0, 1610.0}\n")
         hdr.write("fwhm = {65.0, 35.0, 30.0, 115.0, 90.0}\n")
             

@@ -1,3 +1,6 @@
 *.tif*
 *.hdr
 *.enp
+*.dat*
+tmp/*
+brainstorm

@@ -61,17 +61,18 @@ def setup_stac_client():
 # ==========================================
 # 3. Sentinel-2 Optical Search
 # ==========================================
-def search_sentinel2(catalog):
+def search_sentinel2(catalog, collection="sentinel-2-l1c"):
     """
-    Searches for Sentinel-2 Level-2A (Surface Reflectance) images 
-    within the ROI, date range, and cloud cover threshold.
+    Searches for Sentinel-2 images. By default, we search for L1C (Top of Atmosphere)
+    so we can run atmospheric correction manually, but we can also search for L2A
+    (Surface Reflectance) to compare our results against ESA's official Sen2Cor.
     """
-    print(f"\n[INFO] Searching for Sentinel-2 L2A data...")
+    print(f"\n[INFO] Searching for {collection} data...")
     print(f"       BBOX: {ROI_BBOX}")
     print(f"       Date: {DATE_RANGE}")
     
     search = catalog.search(
-        collections=["sentinel-2-l2a"],
+        collections=[collection],
         bbox=ROI_BBOX,
         datetime=DATE_RANGE,
         query={"eo:cloud_cover": {"lt": MAX_CLOUD_COVER}}
@@ -148,19 +149,16 @@ def main():
     
     catalog = setup_stac_client()
     
-    # 1. Find and download Sentinel-2 (Red, Green, Blue, NIR bands)
-    s2_item = search_sentinel2(catalog)
-    if s2_item:
-        s2_dir = os.path.join(OUTPUT_DIR, f"sentinel2_{s2_item.id}")
-        os.makedirs(s2_dir, exist_ok=True)
-        
-        # We download 10m bands (B02, B03, B04, B08) and the 20m SWIR band (B11) for Aerosols/NDSI
-        target_bands = ["B02", "B03", "B04", "B08", "B11"]
+    target_bands = ["B02", "B03", "B04", "B08", "B11"]
+    
+    # 1. Find and download Sentinel-2 L2A (Official ESA BOA)
+    s2_l2a_item = search_sentinel2(catalog, "sentinel-2-l2a")
+    if s2_l2a_item:
+        s2_l2a_dir = os.path.join(OUTPUT_DIR, f"sentinel2_l2a_{s2_l2a_item.id}")
+        os.makedirs(s2_l2a_dir, exist_ok=True)
         for band in target_bands:
-            if band in s2_item.assets:
-                url = s2_item.assets[band].href
-                out_path = os.path.join(s2_dir, f"{band}.tif")
-                download_asset(url, out_path)
+            if band in s2_l2a_item.assets:
+                download_asset(s2_l2a_item.assets[band].href, os.path.join(s2_l2a_dir, f"{band}.tif"))
     
     # 2. Find and download DEM
     dem_item = search_dem(catalog)

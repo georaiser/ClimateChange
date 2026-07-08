@@ -11,18 +11,35 @@ Rather than manually clicking through web portals (like EarthExplorer or Coperni
 
 ### `01_stac_multisensor_download.py`
 - **Concept:** Spatiotemporal Asset Catalogs (STAC) are the modern standard for querying Earth Observation data via APIs. This avoids downloading entire satellite tiles when you only need a specific bounding box (BBOX).
-- **Academic Note on Band Selection:** Sentinel-2 captures 13 spectral bands, but this script intentionally downloads only 4: **B02 (Blue), B03 (Green), B04 (Red), and B08 (Near-Infrared)**. 
-  *   *Spatial Resolution:* These four bands are the only ones captured at a native **10-meter** resolution, providing the highest precision for mapping glacial fronts.
-  *   *Index Calculation:* Red and NIR are the only bands required to compute the core spectral indices for this project (NDVI for vegetation, NDWI for glacial lakes).
-  *   *Efficiency:* Excluding the 20m and 60m bands (SWIR, Aerosol) drastically reduces disk storage and API download times without sacrificing the data needed for our specific hydrological pipeline.
+> [!WARNING]
+> **Academic Trap: L1C vs L2A Data**
+> *   **Level-1C (L1C):** Top of Atmosphere (TOA) Reflectance. This data still contains atmospheric haze. You *must* download L1C if you intend to perform Atmospheric Correction (FLAASH or COST) yourself.
+> *   **Level-2A (L2A):** Bottom of Atmosphere (BOA) Surface Reflectance. This data has *already* been atmospherically corrected by the European Space Agency using Sen2Cor. If you download L2A, applying FLAASH or COST will **double-correct** the atmosphere, rendering your data scientifically invalid! If you have L2A data, skip atmospheric correction entirely and jump straight to index calculation.
+> *   *Note: Because Microsoft Planetary Computer recently deprecated their global L1C archive, our automated STAC scripts default to downloading **L2A** data. If you want to practice atmospheric correction, you must manually download Level-1 data.*
+
+> [!TIP]
+> **Manual Download Instructions for Atmospheric Correction Practice:**
+> If you want to run `01b_envi_flaash_prep.py` or `02_atmospheric_correction.py`, you need Top of Atmosphere (Level-1) data. 
+> - **Sentinel-2 L1C:** Go to the [Copernicus Data Space Ecosystem (CDSE)](https://dataspace.copernicus.eu/), search for Torres del Paine, download an L1C `.zip` file, extract the `.jp2` bands, and place them in the `data/raw/sentinel2_l1c_manual/` folder.
+> - **Landsat 8/9 L1:** Go to [USGS EarthExplorer](https://earthexplorer.usgs.gov/), download a Collection 2 Level-1 `.tar.gz` file, extract the `.TIF` bands, and process them identically to the Sentinel pipeline.
+
+- **Academic Note on Band Selection:** Sentinel-2 captures 13 spectral bands, but this script intentionally downloads only 5 core bands for efficiency: **B02 (Blue), B03 (Green), B04 (Red), B08 (Near-Infrared), and B11 (Shortwave Infrared)**. These bands contain 95% of the information needed for standard optical climate analysis (vegetation, water, and glaciers) and allow for dynamic K-T aerosol retrieval during atmospheric correction, all while reducing storage footprint.
+  *   *Spatial Resolution:* The Visible and NIR bands are natively **10-meter** resolution, providing the highest precision. Band 11 is natively **20-meter**, which we programmatically downsample to 10m to match.
+  *   *Index Calculation:* Red and NIR are the core bands required to compute spectral indices like NDVI (vegetation) and NDWI (glacial lakes). Band 11 is used for NDSI (snow) and advanced atmospheric modeling.
 - **Action:** A pure Python script utilizing `pystac-client` and `planetary-computer` (or AWS Earth Search) to search and download Sentinel-2, Landsat, and DEM data for the Torres del Paine Region of Interest (ROI). 
 - **Dependencies:** `pystac-client`, `planetary-computer`, `rasterio`
 
+### `01c_landsat_download.py`
+- **Concept:** Adapting our STAC query methodology to a different satellite constellation (NASA/USGS Landsat 8/9).
+- **Academic Concept: Pre-Corrected Data:** This script intentionally searches for `landsat-c2-l2` (Collection 2, Level-2) data, which is already Surface Reflectance. By downloading L2 data, we can completely bypass the FLAASH/COST atmospheric correction pipeline and proceed directly to analysis. Microsoft's Planetary Computer does not host Landsat Level-1 data via STAC.
+- **The Physics are Identical:** If you were to manually download Landsat Level-1 (Top of Atmosphere) data from the USGS EarthExplorer portal, the atmospheric correction process is exactly the same! Because physics is sensor-agnostic, you could run the exact same `02_atmospheric_correction.py` (COST model) on the Landsat bands, and it would work perfectly. If you wanted to use ENVI FLAASH, you would simply change the FWHM and Wavelength values in the `.hdr` file to match the Landsat 8 sensor specifications instead of Sentinel-2.
+- **Action:** Downloads the Landsat equivalents of the Sentinel-2 bands (Blue, Green, Red, NIR, SWIR1) for the same ROI and date range.
+
 ### `02_atmospheric_correction.py`
-- **Concept:** Sensors record Top of Atmosphere (TOA) reflectance, which includes atmospheric scattering (haze). True surface analysis requires Bottom of Atmosphere (BOA) reflectance.
-- **Action (Python):** A Python implementation utilizing `rasterio` to mathematically correct TOA to BOA using Dark Object Subtraction (DOS1), replicating standard GIS tools.
-  * **Physics Note on Band Exclusion (DOS1):**
-    * **Applies DOS1 (Haze Removal):** B01 through B08A. (Visible and Near-Infrared light is heavily affected by Rayleigh/Mie scattering, so we subtract the dark object to remove the haze).
+- **Concept:** Sensors record Top of Atmosphere (TOA) reflectance, which includes atmospheric scattering (haze) and absorption. True surface analysis requires Bottom of Atmosphere (BOA) reflectance.
+- **Action:** A Python implementation of the **COST Model (Chavez, 1996)**. It mathematically corrects TOA to BOA by calculating the 1st percentile of dark pixels to robustly subtract atmospheric path radiance (haze), and then queries the STAC API for the Solar Zenith angle to estimate atmospheric transmittance, correcting for absorption.
+  * **Physics Note on Band Exclusion:**
+    * **Applies COST Model:** `B01` through `B08A`. (Visible and Near-Infrared light is heavily affected by Rayleigh/Mie scattering, so we subtract the dark object to remove the haze and divide by transmittance).
     * **Skips DOS1 (Direct Copy):** B09, B10, B11, B12.
         * *Why B11 & B12 (SWIR)?* Wavelengths are too large; atmospheric path radiance is physically negligible.
         * *Why B09 (Water Vapor)?* This band is specifically designed to measure atmospheric water absorption. Normalizing it to the surface corrupts it.
@@ -43,9 +60,9 @@ Our STAC script downloads Top of Atmosphere (TOA) **Reflectance**.
 ### Academic Concept: Model-Based vs Empirical Atmospheric Correction
 In the academic world of atmospheric correction, algorithms fall into two main branches:
 *   **Model-Based (FLAASH):** Uses quantum physics, solar geometry, and atmospheric gas simulations (MODTRAN) to calculate exactly how light scatters. *Requires Radiance.*
-*   **Empirical / Image-Based (DOS1 and QUAC):** Uses statistics from the pixels inside the image itself to guess the atmospheric interference. *Works perfectly with Reflectance.*
-    *   *Our Python script `02_atmospheric_correction.py` uses DOS1 (Dark Object Subtraction), which assumes the darkest pixel in the image should be zero.* 
-    *   *QUAC is just a more advanced version of DOS1. Instead of looking for one dark pixel, QUAC looks at the histogram of the entire image and forces the average reflectance of the scene to match a known universal baseline of "average Earth materials."*
+*   **Empirical / Image-Based (DOS1, COST, and QUAC):** Uses statistics from the pixels inside the image itself to guess the atmospheric interference. *Works perfectly with Reflectance.*
+    *   *Our Python script `02_atmospheric_correction.py` uses the **COST Model (Chavez, 1996)**, which is an advanced version of DOS1. While basic DOS1 only subtracts haze, the COST model dynamically queries the STAC API for the Solar Zenith Angle to estimate atmospheric transmittance (absorption). This division mathematically mimics FLAASH, allowing our Python script to accurately restore the brightness of highly reflective surfaces like snow and rock!* 
+    *   *QUAC is an even more advanced empirical model. Instead of looking for one dark pixel, QUAC looks at the histogram of the entire image and forces the average reflectance of the scene to match a known universal baseline of "average Earth materials."*
 
 ### `01b_envi_flaash_prep.py`
 - **Concept:** Preparing remote sensing data for ENVI FLAASH is incredibly tedious via the GUI. Furthermore, because FLAASH requires Radiance, we cannot feed our downloaded Reflectance directly into it.
@@ -105,11 +122,13 @@ In the academic world of atmospheric correction, algorithms fall into two main b
 - **Action (Anomaly Detection):** Uses `scikit-learn`'s `IsolationForest` to automatically detect and flag anomalous temperature/precipitation readings. **Manual Validation:** The script outputs plots so the user can visually confirm the dropped anomalies.
 - **Action (Interpolation):** Uses the surrounding topography (elevation, latitude) as covariates to train a Random Forest regressor, predicting a continuous climate raster surface using only the cleaned, validated data.
 
-### `04_precipitation_dual_analysis`
-- **Concept:** Comparing historical anomalies to identify extreme drought/flood cycles.
-- **Action (Python):** Analyzes the CHIRPS precipitation dataset and clusters historical climates using unsupervised ML.
+### `04_precipitation_anomaly.py`
+- **Concept:** Comparing historical climate trends to identify extreme drought/flood cycles.
+- **Action (Python ML):** Connects to the Open-Meteo Historical API to dynamically fetch 30 years (1993-2023) of real daily precipitation data (ERA5-Land) for the region. It resamples this massive dataset into annual totals.
+- **Action (Unsupervised Learning):** Uses `scikit-learn`'s K-Means clustering algorithm to mathematically divide the 30-year history into 3 distinct climate regimes: *Extreme Drought*, *Normal*, and *Extreme Flood*.
 - **Action (R Alternative):** An R script (`04b_climate_anomaly.R`) using the `anomalize` package to perform rigorous time-series decomposition (STL) to detect extreme climate anomalies over a 30-year period.
 - **Action (ArcGIS Pro Alternative):** Documenting the use of the *Space-Time Pattern Mining* toolbox to run Emerging Hot Spot Analysis and Local Outlier Analysis on the precipitation cubes.
+- **Output:** Generates a visually classified bar chart showing the 30-year trend and highlighting the exact years that suffered extreme anomalies.
 
 ### `05_uhi_modis_mapping.py`
 - **Concept:** Deriving Land Surface Temperature (LST) from thermal radiance.
@@ -118,27 +137,56 @@ In the academic world of atmospheric correction, algorithms fall into two main b
 ---
 
 ## 🚀 How to Run
+
 ### 1. Install Chapter Dependencies
-Since we are using a modular approach, activate your base environment and install the required packages for Chapter 1:
+Activate your environment and install the required packages:
 ```bash
 mamba activate geocascade_env
-mamba install -c conda-forge pystac-client planetary-computer requests rasterio -y
+mamba install -c conda-forge pystac-client planetary-computer requests rasterio scikit-learn pandas geopandas matplotlib -y
 ```
 
-### 2. Execute Scripts
-Execute the scripts sequentially:
+### 2. Standard Automated Execution (L2A Data)
+For most workflows, you will simply download the pre-corrected L2A surface reflectance data and skip the atmospheric correction scripts entirely:
 ```bash
+# Downloads Sentinel-2 L2A and Copernicus DEM to data/raw/
 python 01_stac_multisensor_download.py
-python 01b_envi_flaash_prep.py  # Run this if you plan to use ENVI FLAASH
-python 02_atmospheric_correction.py
+
+# Optional: Download Landsat 8/9 L2 data
+python 01c_landsat_download.py
 ```
 
-### 3. Run ML Interpolation (Script 3)
-Before running script 3, install the Machine Learning dependencies into the base environment:
+### 3. Optional: Manual Atmospheric Correction Practice (L1 Data)
+If you want to practice physics-based atmospheric correction:
+1. Follow the **Manual Download Instructions** (in the Tip box above) to download L1C/L1 data into your `data/raw/` folder.
+2. Run the prep script to automatically calibrate the metadata and stack the bands for ENVI FLAASH:
+   ```bash
+   python 01b_envi_flaash_prep.py
+   ```
+3. Run the pure-Python COST model correction:
+   ```bash
+   python 02_atmospheric_correction.py
+   ```
+
+### 4. Run ML Interpolation (Script 3)
+In this phase, you will fetch real ERA5 climate data to act as "weather stations" and then run an ML pipeline to clean and interpolate them.
+
+1. **Fetch Real Climate Data:**
+   ```bash
+   python 03a_fetch_real_weather_data.py
+   ```
+2. **Run Anomaly Detection and Interpolation:**
+   ```bash
+   python 03_station_ml_interpolation.py
+   ```
+
+### 5. Run Long-Term Climate Analysis (Script 4)
+Run the 30-year precipitation analysis to classify droughts and floods:
 ```bash
-mamba install -n geocascade_env -c conda-forge scikit-learn pandas geopandas matplotlib -y
+python 04_precipitation_anomaly.py
 ```
-Then, execute the anomaly detection and interpolation script:
+
+### 6. Map Urban Heat Islands (Script 5)
+Download thermal MODIS data and generate an Urban Heat Island map of Punta Arenas:
 ```bash
-python 03_station_ml_interpolation.py
+python 05_uhi_modis_mapping.py
 ```
