@@ -101,6 +101,14 @@ def process_and_plot_lst(tif_path):
         print(f"       [STATISTICS] Urban Peak:    {max_c:.1f}°C")
         print(f"       [STATISTICS] Rural Min:     {min_c:.1f}°C")
         
+        # --- EXPORT GEOCODED TIFF ---
+        lst_celsius_tif = os.path.join(OUT_DIR, "uhi_celsius.tif")
+        profile = src.profile
+        profile.update(dtype=rasterio.float32, count=1, nodata=np.nan)
+        with rasterio.open(lst_celsius_tif, 'w', **profile) as dst:
+            dst.write(lst_celsius, 1)
+        print(f"       [SUCCESS] Geocoded TIFF saved to: {lst_celsius_tif} (Ready for ArcGIS/ENVI)")
+        
         print("\n[INFO] Generating Urban Heat Island Heatmap...")
         plt.figure(figsize=(10, 8))
         

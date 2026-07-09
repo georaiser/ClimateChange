@@ -133,6 +133,7 @@ In the academic world of atmospheric correction, algorithms fall into two main b
 ### `05_uhi_modis_mapping.py`
 - **Concept:** Deriving Land Surface Temperature (LST) from thermal radiance.
 - **Action:** Maps the Urban Heat Island effect over Punta Arenas using thermal satellite data.
+- **GIS Integration:** Automatically exports `uhi_celsius.tif`, a geocoded surface temperature raster ready for 3D visualization or spatial analysis in ArcGIS/ENVI.
 
 ---
 
