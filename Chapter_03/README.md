@@ -1,79 +1,145 @@
-# Chapter 3: Glaciology & Hydrological Modeling
+# Chapter 3: Topography & Glacial Retreat
 
 ## 🎯 Academic Objective
-This chapter focuses on the physical impacts of climate change on water resources in Torres del Paine. We transition from static, single-image processing (Chapter 2) to **Multi-temporal Analysis** (time-series change detection) and **3D Terrain Modeling** (Hydrology).
 
-We continue our **Hybrid Dual-Track Methodology**: providing automated Python scripts alongside manual GUI workflows for ArcGIS Pro.
+The landscape beneath our feet is not static. Glaciers retreat. Rivers carve new paths. Elevation shapes climate, vegetation, and hydrology. This chapter uses two of the most powerful Earth Observation tools — multi-temporal change detection and terrain analysis — to quantify these changes with satellite data.
+
+By the end of this chapter you will be able to:
+- Detect 20 years of glacial retreat from Landsat imagery using NDSI
+- Compute slope, aspect, hillshade, and curvature from a 30m DEM
+- Delineate watersheds and river networks using the ArcHydro D8 algorithm in Python
+- Generate a Hipsometric Curve to assess geomorphic maturity of a drainage basin
 
 ---
 
 ## 🛠️ Scripts & Modules
 
 ### `09_multitemporal_glacier_retreat.py`
-- **Concept:** One of the most visible impacts of climate change is glacial retreat. By comparing satellite imagery of a glacier from two different points in time, we can quantify the exact area of ice lost to melting.
-- **Action (Python Automation):** We use the Planetary Computer STAC API to dynamically fetch Landsat imagery from 2003 and 2023. We calculate the Normalized Difference Snow Index (NDSI) for both years, threshold the ice extent, and mathematically subtract the two arrays to generate a Glacial Retreat Map. The output is exported as `glacier_retreat_2003_2023.tif` for GIS analysis.
-- **Action (ArcGIS Pro Alternative):** 
-  1. Download a 2003 and 2023 Landsat image from USGS EarthExplorer and load them into ArcGIS Pro.
-  2. Use the **Raster Calculator** to compute the NDSI for both: `(Green - SWIR1) / (Green + SWIR1)`.
-  3. Use the **Con** tool (Spatial Analyst) to isolate ice: `Con("NDSI_2003" > 0.4, 1, 0)`.
-  4. Use the **Minus** tool to subtract the 2023 Ice raster from the 2003 Ice raster.
-  5. The resulting map will have values of `1` where ice melted.
+Downloads Landsat imagery from **2003** and **2023** for the same BBOX and computes NDSI to delineate glacier extent at each epoch. Outputs a 3-panel retreat map.
+
+> [!CAUTION]
+> **Critical: Landsat C2-L2 Scale Factor — Without This, All Results Are Wrong**
+>
+> Landsat Collection 2 Level-2 Surface Reflectance data is stored as scaled integers. Raw DNs (~7000–20000) must be converted before computing any index:
+> ```python
+> # ✅ CORRECT — applied to BOTH Green and SWIR bands
+> band = src.read(1, window=win).astype('float32')
+> band = band * 0.0000275 - 0.2   # C2-L2 calibration formula
+> band = np.clip(band, 0, 1)       # Clamp to valid reflectance range
+> ```
+> **Without this step:** Raw Green DNs (~7000) and SWIR DNs (~2000) produce NDSI ≈ (7000-2000)/(7000+2000) ≈ +0.55 for EVERY pixel — including bare rock and ocean. The glacier threshold of `NDSI > 0.4` is exceeded everywhere, making retreat analysis completely meaningless.
+
+**Glacier detection algorithm:**
+$$NDSI = \frac{Green - SWIR}{Green + SWIR}$$
+
+- $NDSI > 0.4$ → confirmed glacier / snow pixel
+- Retreat Map = `ice_2003 - ice_2023`
+  - `+1` = Ice **lost** (melted/retreated) → shown in **red**
+  - `0`  = Stable ice extent → shown in **gray**
+  - `-1` = Ice **gained** (advanced) → shown in **cyan**
+
+**Visualization:** 3-panel chart using `matplotlib.colors.ListedColormap` (not `plt.cm.colors.ListedColormap` — that raises `AttributeError`).
+
+---
 
 ### `10_digital_elevation_processing.py`
-- **Concept:** A Digital Elevation Model (DEM) is just a 2D array of heights. By taking the mathematical derivative (the gradient) in the X and Y directions, we can calculate the steepness of the terrain (Slope) and the compass direction it faces (Aspect). We can then simulate lighting (Hillshade) to make the terrain look 3D.
-- **Action (Python Automation):** Streams the Copernicus 30m Global DEM from the STAC API. Uses pure `numpy.gradient` to teach the physics of Slope and Aspect, and then calculates the Hillshade illumination equation from scratch. The raw DEM and its derivatives are exported as geocoded TIFFs (`copernicus_dem.tif`, `slope_degrees.tif`, `aspect_degrees.tif`, `hillshade.tif`).
-- **Action (ArcGIS Pro Alternative):** 
-  1. Load your DEM raster into ArcGIS Pro.
-  2. Navigate to **Analysis** -> **Tools** to open the Geoprocessing pane.
-  3. Search for the **Surface Parameters** or the classic **Slope**, **Aspect**, and **Hillshade** tools (under *Spatial Analyst -> Surface*).
-  4. Run each tool on your DEM to generate the layers. 
+Downloads the Copernicus DEM GLO-30 (30m resolution) and computes standard terrain derivatives.
+
+> [!WARNING]
+> **Geographic CRS Pitfall — Slope Values Wrong by Factor ~3300**
+>
+> CopDEM GLO-30 is delivered in **EPSG:4326** (geographic coordinates, units = degrees). Calling `np.gradient(dem, 30.0, 30.0)` tells NumPy that pixels are 30m apart — but they are actually ~0.00028° apart.
+>
+> **Correct approach:** Account for degrees-to-meters conversion at the study latitude:
+> ```python
+> lat_m_per_deg = 111_000.0                              # ~constant
+> lon_m_per_deg = 111_000.0 * np.cos(np.radians(-51.0)) # ~70,000 at 51°S
+> pix_lat_deg = abs(src.res[0])   # pixel height in degrees
+> pix_lon_deg = abs(src.res[1])   # pixel width in degrees
+>
+> dy, dx = np.gradient(dem,
+>                       pix_lat_deg * lat_m_per_deg,
+>                       pix_lon_deg * lon_m_per_deg)
+> slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
+> ```
+
+**Terrain derivatives computed:**
+| Product | Formula | Use |
+|---------|---------|-----|
+| Slope | $\arctan(\sqrt{(\partial z/\partial x)^2 + (\partial z/\partial y)^2})$ | Erosion risk, stability |
+| Aspect | $\arctan2(-\partial z/\partial x, \partial z/\partial y)$ | Solar radiation, vegetation |
+| Hillshade | $\cos(\theta_z) \cdot \cos(slope) + \sin(\theta_z) \cdot \sin(slope) \cdot \cos(\theta_{sun} - aspect)$ | Visualization |
+| Curvature | $\partial^2 z / \partial x^2 + \partial^2 z / \partial y^2$ | Flow convergence/divergence |
+
+---
 
 ### `11_watershed_delineation.py`
-- **Concept:** Water flows downhill. By algorithmically evaluating our DEM to find the steepest downhill path from every pixel, we can trace where water will flow (Flow Direction) and sum up how much water accumulates at the bottom (Flow Accumulation) to trace river networks and delineate watershed basins.
-- **Action (Python Automation):** Uses the `pysheds` python package to perfectly replicate the ArcHydro toolset. It mathematically fills sinks in the DEM, runs the D8 routing algorithm, and plots the River Network using logarithmic scaling. The hydrological models are exported as `flow_direction.tif` and `flow_accumulation.tif`.
-- **Action (ArcGIS Pro Alternative):** 
-  1. Open the Geoprocessing pane and search for the **Spatial Analyst -> Hydrology** toolset.
-  2. Run the **Fill** tool on your DEM to remove sinks.
-  3. Run the **Flow Direction** tool on the Filled DEM.
-  4. Run the **Flow Accumulation** tool on the Flow Direction output.
-  5. Change the Symbology of the Accumulation layer to a standard deviation stretch to visualize the river network!
+Replicates the ESRI **ArcHydro** workflow in pure Python using the `pysheds` library. Delineates river networks and generates a Hipsometric Curve for basin morphometric analysis.
+
+**D8 Flow Routing Algorithm:**
+Each DEM pixel routes water to its single steepest downhill neighbor (8 possible directions). The D8 direction is encoded as powers of 2 (1=E, 2=SE, 4=S, 8=SW, 16=W, 32=NW, 64=N, 128=NE).
+
+**Steps:**
+1. **Fill Sinks** — removes DEM depressions that would trap water forever
+2. **Flow Direction** — D8 routing to steepest neighbor
+3. **Flow Accumulation** — count how many upstream pixels drain to each cell
+4. **River Network** — threshold: `accumulation > 1000 pixels` ≈ 0.9 km² contributing area at 30m
+
+**Hipsometric Curve:**
+A plot of **normalized elevation** (h/H) vs **fraction of basin area** above that elevation (a/A).
+
+$$H(h) = \frac{A_{above}}{A_{total}}$$
+
+| Curve Shape | Geomorphic Stage | Interpretation |
+|-------------|-----------------|----------------|
+| Convex (S-shaped) | Young / actively eroding | High mass still in upper basin |
+| Straight diagonal | Mature | Balanced erosion across elevations |
+| Concave | Old / peneplain | Most mass eroded to low elevations |
+
+**Output:** 2×2 panel chart: DEM, Flow Direction, River Network (log-scale), Hipsometric Curve.
+
+---
+
+## 📐 Key Formulas
+
+| Concept | Formula |
+|---------|---------|
+| NDSI | $(Green - SWIR) / (Green + SWIR)$ |
+| Landsat C2-L2 calibration | $\rho = DN \times 0.0000275 - 0.2$ |
+| Slope (radians→degrees) | $s = \arctan\sqrt{(dz/dx)^2 + (dz/dy)^2}$ |
+| Drainage Density | $D_d = \Sigma L / A$ |
 
 ---
 
 ## 🚀 How to Run
 
-### 1. Install Chapter Dependencies
-Activate your environment and ensure the required packages are installed:
+### Install Dependencies
 ```bash
 mamba activate geocascade_env
-mamba install -c conda-forge pysheds pystac-client planetary-computer rasterio pyproj matplotlib numpy -y
+mamba install -n geocascade_env -c conda-forge \
+    pystac-client planetary-computer rasterio pysheds \
+    numpy matplotlib pyproj -y
 ```
 
-### 2. Run Glacial Retreat Analysis (Script 09)
-Fetch historical Landsat data and map the melting of Grey Glacier:
+### Execute Scripts
 ```bash
+# 20-year glacier change detection (Landsat 2003 vs 2023)
 python 09_multitemporal_glacier_retreat.py
-```
 
-### 3. Run DEM Terrain Processing (Script 10)
-Calculate Slope, Aspect, and Hillshade using physics formulas:
-```bash
+# DEM derivatives: slope, aspect, hillshade, curvature
 python 10_digital_elevation_processing.py
-```
 
-### 4. Run Hydrological Delineation (Script 11)
-Trace water flow and map river networks:
-```bash
+# Watershed delineation + Hipsometric Curve
 python 11_watershed_delineation.py
 ```
 
 ---
 
-## 🗺️ GIS Interoperability (ArcGIS Pro & ENVI)
-A core academic requirement of this curriculum is **Hybrid Dual-Track Interoperability**. Every Python script in this chapter has been engineered to automatically export **Geocoded TIFF (.tif)** and **Shapefile (.shp)** outputs into the \data/processed/\ directory.
+## 🗺️ GIS Interoperability
 
-Instead of just looking at matplotlib PNG graphs, students are encouraged to:
-1. Run the automated Python pipeline.
-2. Open **ArcGIS Pro** or **ENVI**.
-3. Drag-and-drop the generated \.tif\ and \.shp\ files directly into the GUI.
-4. Verify that the Python outputs align perfectly with the GUI software basemaps.
+**ArcGIS Pro:** Load `glacier_retreat_2003_2023.tif` → Apply classified symbology with custom colormap (cyan=advanced, gray=stable, red=retreated). Use `Calculate Geometry` to quantify area in each class.
+
+**ENVI:** Use `Change Detection` workflow → Load 2003 and 2023 NDSI as separate bands → Apply `Image Differencing` → Classify results to match our retreat map.
+
+> [!TIP]
+> The `watershed_analysis.png` Hipsometric Curve can be directly inserted into academic reports. A convex curve over a glaciated Patagonian basin indicates **active glacial erosion** is still reshaping the landscape — the basin has not yet reached geomorphic equilibrium.

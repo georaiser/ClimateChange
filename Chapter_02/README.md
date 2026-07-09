@@ -1,80 +1,154 @@
-# Chapter 2: Spectral Signatures & Environmental Monitoring
+# Chapter 2: Spectral Signature Analysis
 
 ## 🎯 Academic Objective
-This chapter bridges the gap between physics and environmental science. We will explore how different Earth materials interact with light, and then scale those physical properties into landscape-level spectral indices to monitor vegetation, soil, and water health.
 
-We use a **Hybrid Dual-Track Methodology**: for every concept, we provide the automated Python script for mass processing, alongside the manual workflow for commercial GUI software (ArcGIS Pro / ENVI).
+Every material on Earth — glacier ice, healthy forest, bare rock, open water — has a unique **spectral fingerprint**: a characteristic pattern of how much light it reflects at each wavelength. This chapter teaches you to read these fingerprints and convert them into quantitative indices that satellites measure operationally.
+
+By the end of this chapter you will be able to:
+- Extract and visualize spectral signature curves for 5 material classes
+- Compute a 7-index spectral suite (NDVI, EVI, SAVI, BSI, NDWI, NDSI, NDGI)
+- Understand why each index was designed and what physical property it targets
+- Batch-process indices across multiple dates to detect temporal change
 
 ---
 
 ## 🛠️ Scripts & Modules
 
 ### `06_spectral_signature_analysis.py`
-- **Concept:** Every material on Earth (Glacial Ice, Patagonian Forest, Bare Rock) absorbs and reflects light differently across the electromagnetic spectrum. This unique pattern is called a "Spectral Signature" or "Spectral Fingerprint."
-- **Action (Python Cloud-Native):** Instead of downloading massive gigabytes of imagery, this script connects to the Microsoft Planetary Computer STAC API. It finds the Cloud Optimized GeoTIFF (COG) URLs for Sentinel-2 bands and uses `rasterio` to stream *only the specific pixels* located at our target coordinates directly from the cloud! It then plots a Spectral Signature graph.
-- **Action (ENVI Alternative):** 
-  1. Open ENVI and load your stacked Sentinel-2 or Landsat image.
-  2. Click the **Spectral Profile** icon on the toolbar.
-  3. Click on a pixel of a glacier, a forest, and bare rock in your image. The profile window will plot their signatures.
-  4. To identify an unknown material, go to *Options -> Spectral Library*. Open the built-in USGS Spectral Library (e.g., `usgs_min.sli` or `veg.sli`).
-  5. Use the *Spectral Angle Mapper (SAM)* tool (*Classification -> Supervised -> Spectral Angle Mapper*) to automatically classify the entire image based on those signatures!
+Extracts mean reflectance per material class across all Sentinel-2 bands (B01–B12) and plots spectral signature curves.
+
+**Material classes sampled:**
+| Class | Spectral Behavior |
+|-------|-------------------|
+| Glacier / Snow | Very high reflectance in Visible, drops sharply in SWIR |
+| Healthy Vegetation | Low Red, very high NIR (red edge), moderate SWIR |
+| Open Water | Moderate Blue/Green, absorbs NIR and SWIR completely |
+| Bare Rock | Moderate and rising reflectance across all bands |
+| Bare Soil | Similar to Rock but with higher SWIR |
+
+> [!NOTE]
+> **Sentinel-2 L2A Scale Factor:** All band values must be divided by **10,000** before use:
+> ```python
+> reflectance = src.read(1).astype('float32') / 10000.0
+> ```
+> Raw DNs are stored as integers in the range 0–10000 to save disk space. Forgetting this step makes all index values nonsensical.
+
+---
 
 ### `07_vegetation_soil_indices.py`
-- **Concept:** By dividing and multiplying the physical reflectances of different bands, we can isolate specific environmental phenomena. NDVI, EVI, and SAVI measure vegetation health and biomass. BSI isolates bare rock and exposed soil to assess erosion risk.
-- **Action (Python Automation):** Downloads a specific mathematical Window (BBOX) of the Sentinel-2 image directly from the cloud. It resamples the 20m SWIR band to 10m on-the-fly, calculates the four indices, and outputs a 4-panel comparison heatmap. It also natively exports `ndvi.tif`, `evi.tif`, `savi.tif`, and `bsi.tif` for immediate loading into GIS software.
-- **Action (ArcGIS Pro Alternative):** 
-  1. Load the Sentinel-2 bands into ArcGIS Pro.
-  2. To calculate NDVI quickly, navigate to the **Imagery** tab -> **Indices** gallery -> **NDVI**. Select your Red and NIR bands.
-  3. To calculate custom indices like BSI or EVI, open the **Raster Calculator** tool.
-  4. Type the mathematical formula manually (e.g., `("B11" + "B04" - "B08" - "B02") / ("B11" + "B04" + "B08" + "B02")`).
-  5. Apply a color ramp (Symbology) to visualize the result.
+Computes a complete 7-index spectral suite with a `safe_ratio()` helper that prevents divide-by-zero errors on water/shadow pixels.
+
+```python
+def safe_ratio(num, den, fill=np.nan):
+    return np.where(np.abs(den) < 1e-6, fill, num / den)
+```
+
+#### Index Formulas & Physical Interpretation
+
+**① NDVI — Normalized Difference Vegetation Index**
+$$NDVI = \frac{NIR - Red}{NIR + Red}$$
+- Range: [-1, +1]. Dense forest ≈ 0.6–0.9, sparse grass ≈ 0.2–0.4, water/snow ≈ negative
+- **Limitation:** Saturates in dense canopies (all values > 0.8 look the same). Use EVI for tropical forests.
+
+**② EVI — Enhanced Vegetation Index**
+$$EVI = 2.5 \cdot \frac{NIR - Red}{NIR + 6 \cdot Red - 7.5 \cdot Blue + 1}$$
+- Reduces soil and atmospheric noise via the soil correction factor (6) and atmosphere resistance (7.5, Blue)
+- Developed by MODIS team; does not saturate in dense canopies
+
+**③ SAVI — Soil-Adjusted Vegetation Index**
+$$SAVI = \frac{(NIR - Red)}{(NIR + Red + L)} \cdot (1 + L), \quad L = 0.5$$
+- $L = 0.5$ is optimal for intermediate vegetation density; $L = 1$ for very sparse, $L = 0$ → NDVI
+- Reduces soil brightness effects in arid and semi-arid environments
+
+**④ BSI — Bare Soil Index**
+$$BSI = \frac{(SWIR + Red) - (NIR + Blue)}{(SWIR + Red) + (NIR + Blue)}$$
+- Positive BSI → exposed soil or urban surfaces. Negative → vegetated or water surfaces.
+- Used in desertification monitoring and urban expansion mapping
+
+**⑤ NDWI — Normalized Difference Water Index**
+$$NDWI = \frac{Green - NIR}{Green + NIR}$$
+- Positive values indicate open water bodies (lakes, rivers, flooded areas)
+- Negative values indicate land. Threshold ≈ 0.0 separates water from land.
+
+**⑥ NDSI — Normalized Difference Snow Index**
+$$NDSI = \frac{Green - SWIR}{Green + SWIR}$$
+- NDSI > 0.4 → confirmed glacier or snow cover
+- Snow/ice has high Green reflectance but absorbs SWIR strongly — unique spectral behavior
+- Same Green band as NDWI, but uses SWIR (not NIR) as the reference
+
+**⑦ NDGI — Normalized Difference Greenness Index**
+$$NDGI = \frac{Green - Red}{Green + Red}$$
+- Sensitive to green biomass, even where NDVI saturates
+- Good for urban-vegetation contrast mapping and phenology studies
+
+> [!WARNING]
+> **B11 (SWIR) Resolution Mismatch:** B11 is natively **20m** while optical bands (B03, B04, B08) are **10m**. When computing BSI or NDSI you must upsample B11 to 10m using `out_shape`:
+> ```python
+> # ✅ Correct — separate window computed from B11's own transform
+> with rasterio.open(item.assets["B11"].href) as src_swir:
+>     win_swir = from_bounds(minx, miny, maxx, maxy, src_swir.transform)
+>     swir = src_swir.read(1, window=win_swir,
+>                          out_shape=target_shape,
+>                          resampling=Resampling.bilinear)
+>
+> # ❌ Wrong — reusing B08's window on B11 gives wrong spatial extent
+> swir = src_swir.read(1, window=win_nir)  # NEVER do this
+> ```
+
+**Output:** 7-panel 2×4 matplotlib figure + 7 individually geocoded GeoTIFFs, one per index.
+
+---
 
 ### `08_automated_index_batcher.py`
-- **Concept:** In industry, environmental monitoring requires calculating indices for dozens or hundreds of images over time to see trends. 
-- **Action (Python Automation):** We use a `for` loop to query the STAC API for *every single cloud-free image in 2023*. For every image found, the script automatically crops the image, extracts the B04 and B08 bands, calculates NDVI, and saves a cropped `.tif` file to the hard drive.
-- **Action (ArcGIS Pro Alternative):** 
-  1. Open ArcGIS Pro and navigate to **Analysis** -> **ModelBuilder**.
-  2. Drag and drop the **Iterate Rasters** tool into your model. Point it at a folder full of downloaded Sentinel-2 imagery.
-  3. Drag in the **Raster Calculator** and connect the Iterator's output to it.
-  4. Set up your mathematical equation, and right-click to save the output dynamically using `%Name%_NDVI.tif`.
-  5. Click **Run** to execute the visual loop.
+Runs the full 7-index suite across a list of acquisition dates and saves results organized by date. Useful for detecting:
+- Seasonal NDVI cycles (growing season onset/offset)
+- Post-fire NDVI drops (using dNBR-like change)
+- Inter-annual glacier extent change via NDSI
+
+---
+
+## 📐 Index Quick-Reference
+
+| Index | Bands Used | Target Property | Threshold |
+|-------|-----------|----------------|-----------|
+| NDVI | NIR, Red | Vegetation health | > 0.3 = vegetation |
+| EVI | NIR, Red, Blue | Dense canopy | > 0.3 = moderate vegetation |
+| SAVI | NIR, Red | Sparse vegetation | > 0.2 = vegetated |
+| BSI | SWIR, Red, NIR, Blue | Bare soil / urban | > 0.0 = bare |
+| NDWI | Green, NIR | Open water | > 0.0 = water |
+| NDSI | Green, SWIR | Snow & glacier | > 0.4 = ice/snow |
+| NDGI | Green, Red | Green biomass | > 0.1 = green veg |
 
 ---
 
 ## 🚀 How to Run
 
-### 1. Install Chapter Dependencies
-Activate your environment and ensure the required packages are installed:
+### Install Dependencies
 ```bash
 mamba activate geocascade_env
-mamba install -c conda-forge pystac-client planetary-computer rasterio pyproj matplotlib numpy -y
+mamba install -n geocascade_env -c conda-forge \
+    pystac-client planetary-computer rasterio numpy matplotlib pyproj -y
 ```
 
-### 2. Run Spectral Signature Extraction (Script 06)
-Extract and plot the spectral signatures of Ice, Forest, and Rock using Cloud-Native streaming:
+### Execute Scripts
 ```bash
+# Spectral signature profiles for 5 material classes
 python 06_spectral_signature_analysis.py
-```
 
-### 3. Calculate Environmental Indices (Script 07)
-Compute NDVI, EVI, SAVI, and BSI dynamically:
-```bash
+# Full 7-index spectral suite (7 TIFFs + 7-panel chart)
 python 07_vegetation_soil_indices.py
-```
 
-### 4. Run the Automated Batch Processor (Script 08)
-Loop through all of 2023 and batch process NDVI files:
-```bash
+# Batch processor across multiple dates
 python 08_automated_index_batcher.py
 ```
 
 ---
 
-## 🗺️ GIS Interoperability (ArcGIS Pro & ENVI)
-A core academic requirement of this curriculum is **Hybrid Dual-Track Interoperability**. Every Python script in this chapter has been engineered to automatically export **Geocoded TIFF (.tif)** and **Shapefile (.shp)** outputs into the \data/processed/\ directory.
+## 🗺️ GIS Interoperability
 
-Instead of just looking at matplotlib PNG graphs, students are encouraged to:
-1. Run the automated Python pipeline.
-2. Open **ArcGIS Pro** or **ENVI**.
-3. Drag-and-drop the generated \.tif\ and \.shp\ files directly into the GUI.
-4. Verify that the Python outputs align perfectly with the GUI software basemaps.
+**ArcGIS Pro:** Load individual index TIFFs → use `Raster Calculator` to compare two dates → compute difference raster for change detection.
+
+**ENVI:** Load the 7-band stack → use `Band Math` to recompute any index → apply `Spectral Profile Tool` to compare signatures from field samples vs satellite values.
+
+> [!TIP]
+> In ArcGIS Pro's **Image Classification Wizard**, you can use the 7 index TIFFs as input variables for supervised or unsupervised classification — this is the equivalent of what Chapter 4 does programmatically with scikit-learn.

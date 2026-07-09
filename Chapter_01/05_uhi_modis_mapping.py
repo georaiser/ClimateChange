@@ -57,13 +57,14 @@ def fetch_modis_lst():
         
     print(f"       [SUCCESS] Found {len(items)} scenes. Selecting the clearest summer day...")
     
-    # We select an item (e.g., the first one, which is usually the most recent in the range)
-    item = items[-1] 
+    # Sort by datetime to get the most recent granule (not items[-1] which is oldest)
+    items = sorted(items, key=lambda i: i.datetime, reverse=True)
+    item = items[0]
     print(f"       Selected Acquisition Date: {item.datetime}")
     
-    # Download the LST_Day_1km asset
-    asset = item.assets["LST_Day_1km"]
-    download_url = asset.href
+    if "LST_Day_1km" not in item.assets:
+        raise KeyError("'LST_Day_1km' asset not found in this MODIS item. Try a different date.")
+    download_url = item.assets["LST_Day_1km"].href
     
     out_tif = os.path.join(OUT_DIR, "punta_arenas_modis_lst.tif")
     
@@ -82,15 +83,17 @@ def process_and_plot_lst(tif_path):
         # Read the thermal band
         lst_raw = src.read(1).astype('float32')
         
-        # MODIS LST_Day_1km has a valid range and a fill value (often 0)
-        # We mask out the 0s (no data / clouds)
-        lst_raw[lst_raw == 0] = np.nan
+        # --- CRITICAL PHYSICS CORRECTION ---
+        # MOD11A1 v6.1 fill value is 0 for NO_DATA, and valid range is 7500-65535
+        # (0 K would be physically impossible, but 0 is also the actual fill value)
+        # Mask fill value (0) AND out-of-range low values (< 7500 = below ~−123°C)
+        lst_raw = lst_raw.astype('float32')
+        lst_raw[lst_raw < 7500] = np.nan   # masks fill (0) and any sub-range values
+        lst_raw[lst_raw > 65535] = np.nan  # guard upper bound
         
-        # --- THE PHYSICS CONVERSION ---
-        # 1. Apply MODIS Scale Factor (0.02) to convert raw DN to Kelvin
-        lst_kelvin = lst_raw * 0.02
-        
-        # 2. Convert Kelvin to Celsius
+        # Apply MODIS LST Scale Factor: 0.02 K per DN (per MOD11A1 User Guide)
+        MODIS_LST_SCALE = 0.02  # K / DN
+        lst_kelvin  = lst_raw * MODIS_LST_SCALE
         lst_celsius = lst_kelvin - 273.15
         
         # Calculate statistics

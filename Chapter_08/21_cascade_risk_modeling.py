@@ -103,6 +103,13 @@ def run_machine_learning(X_train, y_train, X_valid, valid_mask, height, width, p
     print("[INFO] Predicting Classes for all pixels in the Data Cube...")
     y_pred = rf.predict(X_valid)
     
+    # Feature Importance — a key ML teaching moment missing from original version
+    print("\n[INFO] Random Forest Feature Importances:")
+    feat_names = ['S2 NIR (Optical)', 'S1 SAR dB (Radar)', 'DEM Elevation (m)', 'MODIS LST (°C)']
+    for name, imp in zip(feat_names, rf.feature_importances_):
+        bar = '█' * int(imp * 50)
+        print(f"       {name:25s}: {bar} {imp:.3f}")
+    
     # Reconstruct the 2D image from the 1D predictions
     prediction_img = np.zeros((height, width), dtype=np.uint8)
     prediction_img.flat[valid_mask] = y_pred
@@ -113,6 +120,14 @@ def run_machine_learning(X_train, y_train, X_valid, valid_mask, height, width, p
     with rasterio.open(out_tif, 'w', **profile) as dst:
         dst.write(prediction_img, 1)
     print(f"       [SUCCESS] Classified Geocoded TIFF saved to: {out_tif}")
+    
+    # Land cover pixel count summary
+    print("\n[INFO] Land Cover Summary:")
+    classes = {0: 'NoData', 1: 'Water', 2: 'Glacier/Ice', 3: 'Land/Vegetation'}
+    for cls_id, cls_name in classes.items():
+        count = np.sum(prediction_img == cls_id)
+        pct   = 100.0 * count / prediction_img.size
+        print(f"       {cls_name:22s}: {count:7d} px ({pct:.1f}%)")
     
     # 6. Plotting
     print("\n[INFO] Generating Visualization...")

@@ -77,19 +77,18 @@ def process_retreat():
         maxx, maxy = transformer2023.transform(BBOX[2], BBOX[3])
         win2023 = from_bounds(minx, miny, maxx, maxy, src2023_green.transform)
         
-        green_2023 = src2023_green.read(1, window=win2023).astype('float32')
-        target_shape = green_2023.shape
+        # --- CRITICAL: Apply Landsat Collection 2 Level-2 Scale Factor ---
+        # Landsat C2-L2 Surface Reflectance is stored as scaled integers.
+        # Formula: SR = DN * 0.0000275 + (-0.2)
+        # WITHOUT this step, raw DNs (~7000-20000) produce NDSI values near 1.0
+        # for ALL pixels, making the glacier threshold meaningless.
+        green_2023 = green_2023 * 0.0000275 - 0.2
+        green_2023 = np.clip(green_2023, 0, 1)  # Clamp to valid [0,1] reflectance range
         
-        # Save profile for TIFF export
-        profile = src2023_green.profile
-        profile.update(
-            dtype=rasterio.int32, count=1, nodata=-9999,
-            height=win2023.height, width=win2023.width,
-            transform=rasterio.windows.transform(win2023, src2023_green.transform)
-        )
-
     with rasterio.open(item_2023.assets["swir16"].href) as src:
         swir_2023 = src.read(1, window=win2023).astype('float32')
+        swir_2023 = swir_2023 * 0.0000275 - 0.2
+        swir_2023 = np.clip(swir_2023, 0, 1)
 
     # Read 2003 Data, forcing it to resample/align exactly to the 2023 array dimensions
     with rasterio.open(item_2003.assets["green"].href) as src2003_green:
@@ -99,9 +98,13 @@ def process_retreat():
         win2003 = from_bounds(minx, miny, maxx, maxy, src2003_green.transform)
         
         green_2003 = src2003_green.read(1, window=win2003, out_shape=target_shape, resampling=Resampling.bilinear).astype('float32')
+        green_2003 = green_2003 * 0.0000275 - 0.2
+        green_2003 = np.clip(green_2003, 0, 1)
         
     with rasterio.open(item_2003.assets["swir16"].href) as src:
         swir_2003 = src.read(1, window=win2003, out_shape=target_shape, resampling=Resampling.bilinear).astype('float32')
+        swir_2003 = swir_2003 * 0.0000275 - 0.2
+        swir_2003 = np.clip(swir_2003, 0, 1)
 
     print("\n[INFO] Calculating Normalized Difference Snow Index (NDSI)...")
     ndsi_2003 = calculate_ndsi(green_2003, swir_2003)
@@ -136,7 +139,8 @@ def process_retreat():
     
     # Custom colormap for retreat: 
     # -1 (Advanced) = Blue, 0 (Stable) = Gray, 1 (Retreated) = Red
-    cmap_diff = plt.cm.colors.ListedColormap(['cyan', 'lightgray', 'red'])
+    from matplotlib.colors import ListedColormap
+    cmap_diff = ListedColormap(['cyan', 'lightgray', 'red'])
     im_diff = axs[2].imshow(retreat_map, cmap=cmap_diff, vmin=-1, vmax=1)
     axs[2].set_title('Glacial Retreat Analysis\nRed = Ice Lost (Melted)')
     axs[2].axis('off')

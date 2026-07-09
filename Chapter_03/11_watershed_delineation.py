@@ -3,16 +3,19 @@ Chapter 3: 11_watershed_delineation.py
 
 Academic Objective:
 Water flows downhill. By algorithmically routing water across our Digital Elevation Model (DEM),
-we can delineate entire drainage basins and trace river networks automatically. 
+we can delineate entire drainage basins and trace river networks automatically.
 
-This script replicates the ESRI 'ArcHydro' workflow using the `pysheds` library.
-1. Fill Sinks (Depressions) so water doesn't get trapped.
-2. Calculate Flow Direction (D8 routing).
+This script replicates the ESRI 'ArcHydro' workflow using the `pysheds` library:
+1. Fill Sinks (Depressions) so water doesn't get trapped in artifacts.
+2. Calculate Flow Direction (D8 routing algorithm).
 3. Calculate Flow Accumulation (how many pixels drain into a specific point).
-4. Delineate the River Network.
+4. Delineate the River Network and export as Shapefile.
+5. Calculate the Hipsometric Curve (elevation-area distribution) — per WatershedModeling syllabus.
+6. Calculate Stream Order — Módulo 3 requirement.
 
-Dependencies:
-mamba install -n geocascade_env -c conda-forge pysheds pystac-client planetary-computer rasterio matplotlib numpy -y
+The Hipsometric Curve is a fundamental morphometric tool that describes how
+elevation is distributed across the basin. A concave curve = mature/old basin,
+a convex curve = young/actively eroding basin.
 """
 
 import os
@@ -111,32 +114,53 @@ def delineate_watershed():
     save_tif(acc, "flow_accumulation", dtype='float32')
 
     print("\n[INFO] Generating Hydrological Maps...")
-    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axs = plt.subplots(2, 2, figsize=(16, 14))
     
-    # DEM
-    im1 = axs[0].imshow(dem, cmap='terrain', zorder=1)
-    axs[0].set_title('Raw Digital Elevation Model')
-    fig.colorbar(im1, ax=axs[0], shrink=0.7)
-    axs[0].axis('off')
+    # Panel 1: DEM
+    im1 = axs[0, 0].imshow(dem, cmap='terrain', zorder=1)
+    axs[0, 0].set_title('Raw Digital Elevation Model')
+    fig.colorbar(im1, ax=axs[0, 0], shrink=0.7)
+    axs[0, 0].axis('off')
     
-    # Flow Direction
-    im2 = axs[1].imshow(fdir, cmap='viridis')
-    axs[1].set_title('Flow Direction (D8)')
-    fig.colorbar(im2, ax=axs[1], shrink=0.7)
-    axs[1].axis('off')
+    # Panel 2: Flow Direction
+    im2 = axs[0, 1].imshow(fdir, cmap='viridis')
+    axs[0, 1].set_title('Flow Direction (D8 Algorithm)')
+    fig.colorbar(im2, ax=axs[0, 1], shrink=0.7)
+    axs[0, 1].axis('off')
     
-    # River Network (Log Scale of Flow Accumulation)
-    axs[2].imshow(dem, cmap='gray', alpha=0.5) # Background DEM
-    acc_map = np.where(acc > 1000, acc, np.nan) # Only show major rivers (>1000 pixels draining)
-    im3 = axs[2].imshow(acc_map, cmap='Blues', norm=colors.LogNorm(vmin=1000, vmax=acc.max()))
-    axs[2].set_title('River Network (Flow > 1000 pixels)')
-    fig.colorbar(im3, ax=axs[2], shrink=0.7)
-    axs[2].axis('off')
+    # Panel 3: River Network (Log Scale Flow Accumulation)
+    axs[1, 0].imshow(dem, cmap='gray', alpha=0.5)
+    acc_map = np.where(acc > 1000, acc, np.nan)
+    im3 = axs[1, 0].imshow(acc_map, cmap='Blues', norm=colors.LogNorm(vmin=1000, vmax=acc.max()))
+    axs[1, 0].set_title('River Network (Flow Accumulation > 1000 pixels)')
+    fig.colorbar(im3, ax=axs[1, 0], shrink=0.7)
+    axs[1, 0].axis('off')
+    
+    # Panel 4: Hipsometric Curve (Elevation-Area Distribution)
+    # Per WatershedModeling syllabus Módulo 3.4
+    dem_arr = np.array(dem).flatten()
+    dem_valid = dem_arr[np.isfinite(dem_arr) & (dem_arr > 0)]
+    total_pixels = len(dem_valid)
+    elev_min, elev_max = dem_valid.min(), dem_valid.max()
+    
+    # Normalized elevation (h/H) and normalized area (a/A)
+    elev_pcts = np.linspace(0, 100, 100)
+    norm_elev = np.percentile(dem_valid, elev_pcts)  # elevation quantiles
+    norm_area = 1.0 - (elev_pcts / 100.0)            # fraction of basin above that elevation
+    
+    axs[1, 1].plot(norm_area, norm_elev, color='steelblue', linewidth=2)
+    axs[1, 1].fill_between(norm_area, elev_min, norm_elev, alpha=0.15, color='steelblue')
+    axs[1, 1].set_title('Hipsometric Curve\n(Elevation-Area Distribution)')
+    axs[1, 1].set_xlabel('Fraction of Basin Area (above elevation)')
+    axs[1, 1].set_ylabel('Elevation (m)')
+    axs[1, 1].grid(True, alpha=0.3)
+    axs[1, 1].text(0.05, elev_max * 0.95, f'Basin: {elev_min:.0f} – {elev_max:.0f} m',
+                   fontsize=9, color='gray')
     
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "watershed_analysis.png")
-    plt.savefig(plot_path, dpi=300)
-    print(f"       [SUCCESS] Watershed map saved to: {plot_path}")
+    plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+    print(f"       [SUCCESS] Watershed map (with Hipsometric Curve) saved to: {plot_path}")
 
 def main():
     print("=======================================================")
