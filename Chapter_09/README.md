@@ -1,45 +1,60 @@
-# Chapter 9: Multi-Task Deep Learning (Architecture Roadmap)
+# Chapter 9: Deep Learning Land Cover Classification
 
-> [!NOTE]
-> This chapter defines the architecture. Full implementation is planned for a future release.
+## Overview
 
-## Academic Objective
-Train a single neural network to simultaneously predict multiple environmental outputs
-from the 4-band satellite data cube produced in Chapter 8:
-- Land Cover Classification (Ice / Water / Vegetation / Rock / Bare Soil)
-- Environmental Stress Level (regression output, 0.0 to 1.0)
-- Change Detection Flag (binary: changed vs stable pixel)
+Implements a 3-layer Convolutional Neural Network (CNN) for multi-class land cover
+classification using the 4-band multi-sensor data cube built in Chapter 8.
 
----
+**Why CNN vs Random Forest?**
+Random Forest classifies each pixel **independently** with no spatial context.
+A CNN sees a **32x32 pixel neighbourhood** and learns spatial patterns: edges,
+texture gradients, and the surroundings of each pixel.
 
-## Planned Architecture
+## Scripts
 
-**Input:** 4-band data cube from Ch08 (S2-NIR, S1-SAR, DEM, MODIS-LST)
+| Script | Purpose |
+|---|---|
+| `24_deep_learning_landcover.py` | CNN training + full-image prediction |
 
-**Shared Encoder:** CNN feature extractor
-- Backbone: ResNet-18 or EfficientNet-B0 (ImageNet pretrained)
-- Shared features capture multi-sensor correlations
+## CNN Architecture
 
-**Multi-Task Decoder Heads:**
-| Head | Type | Output |
+```
+Input : (B, 4, 32, 32)  -- 4 bands, 32x32 patch
+Block1: Conv2d(4->32, 3x3) + BatchNorm + ReLU + MaxPool2x2  -> 16x16
+Block2: Conv2d(32->64,3x3) + BatchNorm + ReLU + MaxPool2x2  -> 8x8
+Block3: Conv2d(64->128,3x3)+ BatchNorm + ReLU + MaxPool2x2  -> 4x4
+FC1   : 128*4*4 -> 256, ReLU, Dropout(0.3)
+FC2   : 256 -> 3 classes  [Water | Glacier | Land/Veg]
+```
+
+## Classes (Physics-Based Labels)
+
+| Class | Label | Thresholds |
 |---|---|---|
-| Classification | Softmax | 5-class land cover probability |
-| Regression | Linear | Stress level [0,1] |
-| Detection | Sigmoid | Binary change flag |
+| Water | 1 | SAR < 10th pct AND NIR < 10th pct |
+| Glacier | 2 | DEM > 90th pct AND LST < 10th pct |
+| Land/Veg | 3 | NIR > 90th pct AND LST > 90th pct |
 
-**Combined Loss:**
-  L_total = alpha * CrossEntropy + beta * MSE + gamma * BCE
-  (Kendall et al. 2018 uncertainty weighting for automatic alpha/beta/gamma)
+> [!IMPORTANT]
+> **Prerequisite:** Run `Chapter_08/20_multisensor_data_fusion.py` first to create
+> `cascade_master_stack.tif` (4-band cube: S2 NIR, SAR VV dB, DEM m, MODIS LST C).
 
-## Key Concepts
+## Key Technical Notes
 
-- Multi-task learning: shared representations reduce overfitting vs separate models
-- Transfer learning: ImageNet weights provide useful low-level feature detectors
-- Loss weighting: uncertainty weighting auto-balances task losses
-- Environmental correlation: stressed vegetation = anomalous SAR + low NDVI + elevated LST
+- **Patch normalization:** per-band z-score (mean=0, std=1) -- critical for CNN convergence
+- **NoData handling:** `nan_to_num(0.0)` fills missing pixels in patches
+- **Inference:** sliding-window batch of 1024 patches per forward pass
+- **Outputs:** `cnn_landcover_prediction.tif` (uint8, nodata=0), `cnn_confidence_map.tif` (float32, nodata=-9999)
 
-## Planned Installation
+## Installation
 
 ```bash
-mamba install -n geocascade_env -c conda-forge pytorch torchvision numpy matplotlib scikit-learn -y
+mamba install -n geocascade_env -c conda-forge pytorch torchvision cpuonly rasterio numpy matplotlib scikit-learn -y
+```
+
+## Run
+
+```bash
+conda activate geocascade_env
+python Chapter_09/24_deep_learning_landcover.py
 ```

@@ -1,89 +1,167 @@
-# Chapter 2: Spectral Signature Analysis
+# 📡 Chapter 2: Spectral Analysis & Index Automation
 
-## Academic Objective
-Every material on Earth reflects electromagnetic radiation differently across the spectrum.
-This chapter demonstrates cloud-native pixel extraction (streaming directly from COG URLs),
-computes 7 vegetation/soil indices, and interprets the physics behind each band ratio.
+> **GeoCascade** | Sentinel-2 L2A · Spectral Signatures · Remote Sensing Indices · Batch Automation
 
 ---
 
-## Scripts
+## 📋 Scripts Overview
 
-### 06_spectral_signature_analysis.py -- Cloud-Native Spectral Extraction
+### 1. `06_spectral_signature_analysis.py` — Spectral Signature Analysis
 
-Extracts per-material reflectance from Sentinel-2 L2A. No full download -- only exact
-pixels are streamed via Cloud Optimized GeoTIFF HTTP range requests.
+Downloads Sentinel-2 L2A imagery and samples spectral signatures across **5 land cover types**:
 
-**Materials sampled (4 classes):**
-- Glacial Ice (Grey Glacier) -- lat: -51.010, lon: -73.230
-- Patagonian Forest -- lat: -51.150, lon: -72.950
-- Bare Rock / Scree -- lat: -50.900, lon: -72.900
-- **NEW** Open Water (Grey Lake) -- lat: -51.050, lon: -73.180
+| Class | Description |
+|---|---|
+| 🌿 Dense Vegetation | Forest / dense canopy |
+| 💧 Open Water | Lakes / rivers |
+| 🧊 Glacier Ice | Permanent snow/ice |
+| 🪨 Rock / Bare Soil | Exposed geology |
+| 🌱 Sparse Vegetation | Shrubland / meadow |
 
-**Bands (7 total, B05 Red Edge added):**
+**Bands read:** B02 (Blue), B03 (Green), B04 (Red), B05 (Red Edge), B08 (NIR), B11 (SWIR1), B12 (SWIR2)
 
-| Band | Wavelength | Physical Meaning |
-|---|---|---|
-| B02 | 490 nm | Blue -- atmosphere, deep water |
-| B03 | 560 nm | Green -- vegetation peak, NDWI |
-| B04 | 665 nm | Red -- chlorophyll absorption |
-| **B05** | **705 nm** | **Red Edge -- early vegetation stress** |
-| B08 | 842 nm | NIR -- leaf structure, NDVI |
-| B11 | 1610 nm | SWIR1 -- soil moisture, NDSI |
-| B12 | 2190 nm | SWIR2 -- clay minerals, BSI |
+> [!IMPORTANT]
+> B05 Red Edge is the **7th band** in the band list (index position 6), not the 5th. Confirm band ordering when slicing arrays.
 
-> [!TIP]
-> Red Edge (B05, 705nm) is unique to Sentinel-2. Vegetation stress narrows the
-> red edge BEFORE NDVI shows any change -- making it an earlier warning indicator.
+**Outputs:**
+- Reflectance curve plot per land cover class
+- CSV with mean reflectance per class per band
+- Cloud sort applied — cleanest scene selected automatically
 
-**Improvements:** B05 added, Water sample point, sorted by cloud cover,
-red-edge region shaded on plot, exports spectral_signatures.csv, plt.close().
-
-Run: python 06_spectral_signature_analysis.py
-
-Output: spectral_signatures.png + spectral_signatures.csv
+**Run:**
+```bash
+python 06_spectral_signature_analysis.py
+```
 
 ---
 
-### 07_vegetation_soil_indices.py -- 7-Index Spectral Suite
+### 2. `07_vegetation_soil_indices.py` — Vegetation & Soil Indices *(UPDATED)*
 
-Computes indices with safe_ratio() helper (epsilon denominator guard):
+Computes **7 spectral indices** from Sentinel-2 bands:
 
-| Index | Formula | Use |
+| Index | Formula | Sensitivity |
 |---|---|---|
-| NDVI | (NIR-Red)/(NIR+Red) | Vegetation health |
-| EVI | 2.5*(NIR-Red)/(NIR+6*Red-7.5*Blue+1) | Dense canopy |
-| SAVI | (NIR-Red)/(NIR+Red+0.5)*1.5 | Sparse vegetation, soil background |
-| BSI | ((SWIR+Red)-(NIR+Blue))/((SWIR+Red)+(NIR+Blue)) | Bare soil, urban |
-| NDWI | (Green-NIR)/(Green+NIR) | Open water |
-| NDSI | (Green-SWIR)/(Green+SWIR) | Snow and ice (>0.4 = glacier) |
-| NDGI | (Green-Red)/(Green+Red) | Green vs urban contrast |
+| NDVI | $(NIR - Red) / (NIR + Red)$ | Vegetation health |
+| EVI | $2.5 \cdot (NIR - Red) / (NIR + 6 \cdot Red - 7.5 \cdot Blue + 1)$ | Canopy structure |
+| SAVI | $(NIR - Red) / (NIR + Red + L) \cdot (1 + L)$ | Vegetation over bare soil |
+| BSI | $((SWIR1 + Red) - (NIR + Blue)) / ((SWIR1 + Red) + (NIR + Blue))$ | Bare soil exposure |
+| NDWI | $(Green - NIR) / (Green + NIR)$ | Open water |
+| NDSI | $(Green - SWIR1) / (Green + SWIR1)$ | Snow / glacier ice |
+| NDGI | $(Green - Red) / (Green + Red)$ | Greenness |
+
+> [!IMPORTANT]
+> **Critical B11 Window Bug Fix** — B11 (SWIR1) is a **20 m** band. Reusing the 10 m B02 window to read B11 silently reads the **wrong geographic area** because the pixel grid is different. B11 must use its **own independent window** computed from the 20 m source transform:
+> ```python
+> # ✅ CORRECT — independent window from 20m transform
+> window_20m = rasterio.windows.from_bounds(*bounds, transform=src_20m.transform)
+> b11 = src_20m.read(1, window=window_20m)
+>
+> # ❌ WRONG — reusing 10m window for a 20m band
+> b11 = src_20m.read(1, window=window_10m)
+> ```
+
+**Additional fixes:**
+- `nodata=-9999` (universally readable by ArcGIS, ENVI, QGIS — avoids NaN bit-pattern issues)
+- Summary statistics per index
+- `plt.close()` after each figure to prevent memory leaks
+
+**Run:**
+```bash
+python 07_vegetation_soil_indices.py
+```
+
+---
+
+### 3. `08_automated_index_batcher.py` — Automated Index Batcher *(UPGRADED)*
+
+Batch processes **all cloud-free Sentinel-2 scenes in 2023**, computing NDVI + NDSI + NDWI per scene.
+
+**Key upgrades:**
+
+| Feature | Description |
+|---|---|
+| `safe_ratio()` | NaN (not zero) for water/shadow — never divides by zero |
+| B11 independent window | Correct geographic alignment for 20 m SWIR bands |
+| `nodata=-9999` | Universally portable nodata value |
+| Cloud sort | Cleanest scene always processed first |
+| Skip-if-exists | Resumable runs — already processed scenes skipped |
+| Summary CSV | Per-scene statistics exported |
+| Annual time-series | 3-panel plot across all 2023 scenes |
+
+**`safe_ratio()` implementation:**
+```python
+def safe_ratio(num, den, eps=1e-6):
+    """Returns NaN where denominator is near-zero — never divide directly."""
+    return np.where(np.abs(den) < eps, np.nan, num / den)
+```
+
+**Run:**
+```bash
+python 08_automated_index_batcher.py
+```
+
+---
+
+## 🛠️ Installation
+
+```bash
+mamba install -n geocascade_env -c conda-forge \
+    pystac-client planetary-computer rasterio \
+    pyproj numpy pandas matplotlib -y
+```
+
+---
+
+## 🧠 Key Concepts
+
+### Sentinel-2 Band Resolutions
+
+| Resolution | Bands |
+|---|---|
+| **10 m** | B02 (Blue), B03 (Green), B04 (Red), B08 (NIR) |
+| **20 m** | B05, B06, B07 (Red Edge), B11, B12 (SWIR) |
 
 > [!WARNING]
-> B11 (SWIR1) is 20m native -- must use its OWN independently computed window,
-> NOT the 10m NIR window. Reusing B08 window on a 20m grid reads the wrong area.
+> **Reading a 20 m band with a 10 m window silently returns wrong pixels.** Always compute the window from the band's own native transform. This is one of the most common silent data corruption bugs in multi-resolution Sentinel-2 workflows.
 
-Run: python 07_vegetation_soil_indices.py
+### `safe_ratio()` — Safe Division
+
+```python
+# ✅ Correct: NaN where denominator ≈ 0
+result = np.where(np.abs(den) < 1e-6, np.nan, num / den)
+
+# ❌ Wrong: Zero denominator maps to 0 (masks water, shadow, etc.)
+result = np.where(den != 0, num / den, 0)
+```
+
+### Index Thresholds
+
+| Index | Threshold | Meaning |
+|---|---|---|
+| NDSI | > 0.4 | Glacier / snow |
+| NDWI | > 0.3 | Open water |
+| NDVI | > 0.3 | Active vegetation |
+
+### `nodata=-9999` vs `np.nan`
+
+> [!NOTE]
+> `rasterio` writes `np.nan` as arbitrary bit patterns on some systems. `-9999` is a universally readable nodata sentinel across **ArcGIS, ENVI, and QGIS** and should always be preferred when writing GeoTIFFs.
+
+### Batch Automation Pattern
+
+- **Cloud sort** → ensures the cleanest scene is always processed first
+- **Skip-if-exists** → makes batch runs safely resumable after interruption
 
 ---
 
-### 08_automated_index_batcher.py -- Multi-Date Batch Processor
-Runs the full 7-index suite across multiple acquisition dates.
+## 📁 Expected Outputs
 
-Run: python 08_automated_index_batcher.py
-
----
-
-## Key Concepts
-
-- Spectral Signature: unique reflectance fingerprint across wavelengths
-- Red Edge saturation: NDVI fails in dense canopy (>0.8); EVI corrects this
-- Safe ratio: (a-b)/(a+b+epsilon) avoids divide-by-zero
-- L2A scale factor: Raw DN / 10000 = Physical Reflectance [0,1]
-- COG: Cloud Optimized GeoTIFF -- tiled for HTTP streaming
-
-## Installation
-
-`ash
-mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio numpy matplotlib pyproj pandas -y
-`
+```
+Chapter_02/
+├── outputs/
+│   ├── spectral_signatures.csv        # Mean reflectance per class per band
+│   ├── spectral_signature_plot.png    # Reflectance curves by land cover
+│   ├── index_<scene_id>.tif           # Per-scene index GeoTIFFs
+│   ├── batch_summary.csv              # Annual statistics summary
+│   └── annual_timeseries.png          # 3-panel NDVI/NDSI/NDWI time series
+```

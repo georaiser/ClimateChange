@@ -32,20 +32,37 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "data", "processed_envi")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def find_latest_sentinel_dir():
+    """Find the most recently created L1C raw directory."""
     s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_l1c_*"))
+    l2a_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_l2a_*"))
     if not s2_dirs:
-        raise FileNotFoundError("No Sentinel-2 L1C raw data found. Run script 01 first.")
+        if l2a_dirs:
+            raise FileNotFoundError(
+                "Found Sentinel-2 L2A directory, but FLAASH requires L1C (TOA Radiance).\n"
+                "Run script 01 with collection='sentinel-2-l1c' to download L1C data."
+            )
+        raise FileNotFoundError(
+            "No Sentinel-2 L1C raw data found. Run script 01_stac_multisensor_download.py first."
+        )
     return max(s2_dirs, key=os.path.getmtime)
 
 def fetch_stac_metadata(item_id):
     print(f"[INFO] Step 0: Fetching metadata for {item_id} from STAC API...")
-    catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
-    search = catalog.search(collections=["sentinel-2-l1c"], ids=[item_id])
-    items = list(search.items())
-    if not items:
-        print("[WARNING] Could not fetch metadata. Using default Patagonian summer values.")
+    try:
+        catalog = Client.open(
+            "https://planetarycomputer.microsoft.com/api/stac/v1",
+            modifier=pc.sign_inplace
+        )
+        search = catalog.search(collections=["sentinel-2-l1c"], ids=[item_id])
+        items  = list(search.items())
+        if not items:
+            print("       [WARNING] Scene not found in STAC. Using default Patagonian summer values.")
+            return {"s2:mean_solar_zenith": 45.0, "datetime": "2023-01-15T14:30:00Z"}
+        print(f"       [SUCCESS] Metadata fetched from STAC.")
+        return items[0].properties
+    except Exception as e:
+        print(f"       [WARNING] STAC fetch failed ({e}). Using defaults.")
         return {"s2:mean_solar_zenith": 45.0, "datetime": "2023-01-15T14:30:00Z"}
-    return items[0].properties
 
 def main():
     print("==================================================")
@@ -92,40 +109,53 @@ def main():
         target_height = src_b2.height
         
     print("[INFO] Step 2: Preparing ENVI BIL Output Stack (Converting to Radiance)...")
-    
-    # We save as int16, scaled by 10 for FLAASH. (So user enters 10 for Scale Factor)
-    meta.update({'driver': 'ENVI', 'count': 5, 'interleave': 'bil', 'dtype': rasterio.int16, 'nodata': 0})
+    print("       nodata = -9999 (ArcGIS/ENVI compatible)")
+
+    # Float32 output -- FLAASH accepts 32-bit float with scale factor
+    # nodata=-9999 replaces 0 to avoid ambiguity with real zero-reflectance pixels
+    meta.update({
+        'driver': 'ENVI', 'count': 5, 'interleave': 'bil',
+        'dtype': rasterio.float32, 'nodata': -9999
+    })
     out_file = os.path.join(OUTPUT_DIR, f"flaash_radiance_stack_{item_id}.dat")
     
-    def convert_to_radiance(reflectance_array, esun):
-        # 1. Convert L1C digital number to True Reflectance (0.0 - 1.0)
+    def convert_to_radiance(reflectance_array):
+        """Convert L1C TOA reflectance DN to FLAASH-compatible radiance (W/m2/sr/um)."""
+        # Step 1: DN -> True Reflectance [0.0, 1.0]
         rho = reflectance_array.astype(np.float32) / 10000.0
-        # 2. Convert Reflectance to Radiance in W/(m2*sr*um)
-        radiance_W = (rho * esun * math.cos(zenith_rad)) / (math.pi * d2)
-        # 3. Convert to FLAASH units: µW/(cm2*sr*nm)
-        radiance_flaash = radiance_W * 0.1
-        # 4. Scale by 10 and convert to int16 to save disk space
-        radiance_scaled = radiance_flaash * 10.0
-        mask = reflectance_array == 0
-        radiance_scaled[mask] = 0
-        return np.clip(radiance_scaled, 0, 32767).astype(np.int16)
+        # Guard: zero-valued pixels are nodata (missing/cloud) -- set to NaN first
+        rho = np.where(reflectance_array == 0, np.nan, rho)
+        # Step 2: Reflectance -> Radiance (W/m2/sr/um)
+        # L = (rho * ESUN * cos(zenith)) / (pi * d^2)
+        # ESUN is band-specific and injected by the caller
+        return rho  # caller multiplies by esun and pi factor
+
+    def to_flaash_radiance(refl_dn, esun):
+        rho = np.where(refl_dn == 0, np.nan, refl_dn.astype(np.float32) / 10000.0)
+        radiance_W     = (rho * esun * math.cos(zenith_rad)) / (math.pi * d2)
+        radiance_flaash = radiance_W * 0.1  # -> uW/cm2/sr/nm
+        # Replace NaN (cloud/nodata) with -9999
+        return np.where(np.isnan(radiance_flaash), -9999, radiance_flaash).astype(np.float32)
         
     with rasterio.open(out_file, 'w', **meta) as dst:
         for i, b in enumerate(["B02", "B03", "B04", "B08"], start=1):
-            print(f"       -> Calibrating & Stacking {b} (Native 10m)...")
+            print(f"       -> Calibrating & Stacking {b} (10m)...")
             with rasterio.open(band_paths[b]) as src:
-                rad_data = convert_to_radiance(src.read(1), esun_dict[b])
-                dst.write(rad_data, i)
-                
-        print("       -> Resampling, Calibrating & Stacking B11 (20m -> 10m)...")
+                dst.write(to_flaash_radiance(src.read(1), esun_dict[b]), i)
+
+        print("       -> Resampling & Calibrating B11 (20m -> 10m)...")
         with rasterio.open(band_paths["B11"]) as src_b11:
             b11_resampled = np.empty((target_height, target_width), dtype=rasterio.uint16)
             reproject(
                 source=src_b11.read(1), destination=b11_resampled,
                 src_transform=src_b11.transform, src_crs=src_b11.crs,
-                dst_transform=target_transform, dst_crs=target_crs, resampling=Resampling.bilinear
+                dst_transform=target_transform, dst_crs=target_crs,
+                resampling=Resampling.bilinear
             )
-            dst.write(convert_to_radiance(b11_resampled, esun_dict["B11"]), 5)
+            dst.write(to_flaash_radiance(b11_resampled, esun_dict["B11"]), 5)
+
+    if not os.path.exists(out_file):
+        raise RuntimeError(f"Output file was not created: {out_file}")
             
     print("[INFO] Step 3: Injecting Sensor Metadata into ENVI Header...")
     hdr_file = out_file.replace('.dat', '.hdr')
@@ -133,14 +163,16 @@ def main():
         hdr.write("wavelength units = Nanometers\n")
         hdr.write("sensor type = Sentinel-2\n")
         hdr.write(f"acquisition time = {date_str}\n")
-        hdr.write("data ignore value = 0\n")
+        hdr.write("data ignore value = -9999\n")  # nodata=-9999 not 0
         hdr.write("band names = {B02 (Blue), B03 (Green), B04 (Red), B08 (NIR), B11 (SWIR)}\n")
         hdr.write("wavelength = {490.0, 560.0, 665.0, 842.0, 1610.0}\n")
         hdr.write("fwhm = {65.0, 35.0, 30.0, 115.0, 90.0}\n")
-            
-    print("\n[SUCCESS] Radiometrically Calibrated ENVI Stack Created!")
-    print(f"[OUTPUT] File: {out_file}")
-    print("[CRITICAL] When FLAASH asks for the Radiance Scale Factor, enter 10 (NOT 10000)!")
+
+    sz = os.path.getsize(out_file) / 1e6
+    print(f"\n[SUCCESS] Radiometrically Calibrated ENVI Stack Created! ({sz:.1f} MB)")
+    print(f"[OUTPUT]   {out_file}")
+    print("[CRITICAL] In FLAASH: Radiance Scale Factor = 1 (float32, already in uW/cm2/sr/nm)")
+    print("[CRITICAL] Data Ignore Value in ENVI header = -9999")
 
 if __name__ == "__main__":
     main()
