@@ -3,7 +3,7 @@
 ## Recommended Run Order
 
 ### Phase 1 -- Download All Real Data (no satellite, no login)
-`ash
+`bash
 conda activate geocascade_env
 python Chapter_01/00_real_data_downloader.py
 python Chapter_01/03a_fetch_real_weather_data.py
@@ -13,7 +13,7 @@ python Chapter_01/03b_era5_trend_analysis.py
 Expected time: 15-30 min (CHIRPS download is the largest step)
 
 ### Phase 2 -- Satellite Processing (Planetary Computer, no login)
-`ash
+`bash
 python Chapter_02/06_spectral_signature_analysis.py
 python Chapter_02/07_vegetation_soil_indices.py
 python Chapter_02/08_automated_index_batcher.py
@@ -32,13 +32,13 @@ python Chapter_07/19b_cloud_penetration_comparison.py
 `
 
 ### Phase 3 -- Machine Learning & Data Fusion
-`ash
+`bash
 python Chapter_08/20_multisensor_data_fusion.py
 python Chapter_08/21_cascade_risk_modeling.py
 `
 
 ### Phase 4 -- Convergence (Final Integration)
-`ash
+`bash
 python Chapter_08/23_real_data_convergence.py
 python Chapter_08/22_combined_insights_engine.py
 python Chapter_12/capstone_pipeline.py
@@ -80,7 +80,7 @@ python Chapter_12/capstone_pipeline.py
 
 ## Environment Setup (First Time Only)
 
-`ash
+`bash
 mamba create -n geocascade_env python=3.11 -y
 conda activate geocascade_env
 mamba install -n geocascade_env -c conda-forge \\
