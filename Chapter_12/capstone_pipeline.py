@@ -1,77 +1,80 @@
 """
-Chapter 12: Robust Site Analysis Capstone
-This consolidated script represents a full-scale real-world GIS project.
-It automatically sources:
-1. Vector Data (Real-world Roads) via Overpass API / GeoPandas.
-2. Raster Data (Copernicus DEM & Sentinel-2 L2A) via STAC.
-It then performs Vector-Raster Overlay analysis (Zonal Statistics within buffers)
-and generates an automated Site Analysis Report in Markdown.
+Chapter 12: Robust Site Analysis Capstone (CLI Version)
+
+This script is the culmination of the Core Physical Sciences (Chapters 1-7).
+It acts as a Unified Command-Line Tool, taking user-defined coordinates and 
+dynamically fusing Optical (NDVI), Radar (SAR), and Elevation (DEM) data with 
+real-world Vector Infrastructure (OSMnx) to generate an automated Site Analysis Report.
+
+Usage:
+python capstone_pipeline.py --bbox -72.8 -51.8 -72.4 -51.6 --date_range 2023-01-01/2023-03-31
 """
 
 import os
-import requests
+import argparse
 import rasterio
 from rasterio.windows import from_bounds
+from rasterio.warp import reproject, Resampling
 import numpy as np
 import matplotlib.pyplot as plt
 import geopandas as gpd
-from shapely.geometry import box
 from pystac_client import Client
 import planetary_computer as pc
 from pyproj import Transformer
 from rasterstats import zonal_stats
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # ==========================================
-# 1. Configuration (STUDENTS: CHANGE YOUR BBOX HERE)
+# 1. Configuration & CLI
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE_DIR, "data", "processed")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# Format: [min_lon, min_lat, max_lon, max_lat]
-# Default: A mountainous section near Puerto Natales, Patagonia
-BBOX = [-72.8, -51.8, -72.4, -51.6]
+def parse_args():
+    parser = argparse.ArgumentParser(description="GeoCascade Automated Site Analysis Capstone")
+    parser.add_argument("--bbox", nargs=4, type=float, default=[-72.8, -51.8, -72.4, -51.6],
+                        help="Bounding box in format: min_lon min_lat max_lon max_lat")
+    parser.add_argument("--date_range", type=str, default="2023-01-01/2023-03-31",
+                        help="Date range for optical/radar imagery (YYYY-MM-DD/YYYY-MM-DD)")
+    return parser.parse_args()
 
 # ==========================================
-# 2. Vector Sourcing (OpenStreetMap via Overpass API)
+# 2. Vector Sourcing (OpenStreetMap)
 # ==========================================
-def fetch_infrastructure_vector(bbox):
+def fetch_infrastructure(bbox):
     print("\n[INFO] Fetching Real-World Infrastructure (Roads) from OpenStreetMap...")
     import osmnx as ox
     try:
-        # v2.x syntax
         graph = ox.graph_from_bbox(bbox=(bbox[0], bbox[1], bbox[2], bbox[3]), network_type='all')
     except TypeError:
-        # v1.x syntax
         graph = ox.graph_from_bbox(bbox[3], bbox[1], bbox[2], bbox[0], network_type='all')
         
-    # Convert graph to GeoDataFrames
-    nodes, edges = ox.graph_to_gdfs(graph)
+    _, edges = ox.graph_to_gdfs(graph)
     
-    # Export as Shapefile
     roads_shp = os.path.join(OUT_DIR, "infrastructure_roads.shp")
-    
-    # Clean lists/tuples from columns for Shapefile compatibility
     for col in edges.columns:
         if edges[col].apply(lambda x: isinstance(x, (list, tuple))).any():
             edges[col] = edges[col].astype(str)
             
     edges.to_file(roads_shp)
-    print(f"       [SUCCESS] Downloaded {len(edges)} road segments to {roads_shp}")
-    return edges, roads_shp
+    print(f"       [SUCCESS] Downloaded {len(edges)} road segments.")
+    return edges
 
 # ==========================================
-# 3. Raster Sourcing (STAC API)
+# 3. Multi-Sensor Data Fusion (STAC)
 # ==========================================
-def fetch_rasters(bbox):
-    print("\n[INFO] Fetching Copernicus DEM and Sentinel-2 L2A from STAC...")
+def fetch_and_fuse_rasters(bbox, date_range):
+    print("\n[INFO] Connecting to Planetary Computer for Multi-Sensor Fusion...")
     catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
     
-    # 1. Fetch DEM
+    # 1. Base Grid (DEM)
+    print("       Fetching Copernicus DEM...")
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=bbox)
     item_dem = list(search_dem.items())[0]
     
-    dem_path = os.path.join(OUT_DIR, "capstone_dem.tif")
     with rasterio.open(item_dem.assets["data"].href) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
         minx, miny = transformer.transform(bbox[0], bbox[1])
@@ -81,141 +84,168 @@ def fetch_rasters(bbox):
         
         dem = src.read(1, window=window).astype('float32')
         dem = np.where(dem < 0, np.nan, dem)
-        profile = src.profile
-        profile.update(dtype=rasterio.float32, count=1, nodata=np.nan, 
-                       height=int(window.height), width=int(window.width), transform=transform)
         
-        with rasterio.open(dem_path, 'w', **profile) as dst:
-            dst.write(dem, 1)
-            
-    # 2. Fetch Sentinel-2 (NDVI)
-    search_s2 = catalog.search(collections=["sentinel-2-l2a"], bbox=bbox, 
-                               datetime="2022-01-01/2023-12-31", query={"eo:cloud_cover": {"lt": 20}})
+        master_profile = src.profile.copy()
+        master_profile.update(dtype=rasterio.float32, count=1, nodata=np.nan, 
+                              height=int(window.height), width=int(window.width), transform=transform)
+        
+    # Helper to resample other layers to DEM grid
+    def resample_to_master(href, native_process_func=None):
+        dest = np.zeros((master_profile['height'], master_profile['width']), dtype=np.float32)
+        with rasterio.open(href) as rsrc:
+            reproject(
+                source=rasterio.band(rsrc, 1),
+                destination=dest,
+                src_transform=rsrc.transform,
+                src_crs=rsrc.crs,
+                dst_transform=master_profile['transform'],
+                dst_crs=master_profile['crs'],
+                resampling=Resampling.bilinear
+            )
+        if native_process_func:
+            dest = native_process_func(dest)
+        return dest
+
+    # 2. Optical (NDVI via Sentinel-2)
+    print("       Fetching Sentinel-2 (Optical) and computing NDVI...")
+    search_s2 = catalog.search(collections=["sentinel-2-l2a"], bbox=bbox, datetime=date_range, query={"eo:cloud_cover": {"lt": 20}})
     items_s2 = list(search_s2.items())
     if not items_s2:
-        raise Exception("No Sentinel-2 imagery found for this BBOX with <20% cloud cover. Try changing the BBOX or the Date Range.")
-    item_s2 = items_s2[0]
+        raise Exception("No Sentinel-2 imagery found. Try a different date range or BBOX.")
+    item_s2 = sorted(items_s2, key=lambda i: i.properties["eo:cloud_cover"])[0]
     
-    ndvi_path = os.path.join(OUT_DIR, "capstone_ndvi.tif")
-    with rasterio.open(item_s2.assets["B04"].href) as src_red, rasterio.open(item_s2.assets["B08"].href) as src_nir:
-        transformer_s2 = Transformer.from_crs("EPSG:4326", src_red.crs, always_xy=True)
-        minx_s2, miny_s2 = transformer_s2.transform(bbox[0], bbox[1])
-        maxx_s2, maxy_s2 = transformer_s2.transform(bbox[2], bbox[3])
-        win_s2 = from_bounds(minx_s2, miny_s2, maxx_s2, maxy_s2, src_red.transform)
+    red = resample_to_master(item_s2.assets["B04"].href)
+    nir = resample_to_master(item_s2.assets["B08"].href)
+    ndvi = np.where((nir + red) == 0, np.nan, (nir - red) / (nir + red))
+    
+    # 3. Radar (SAR VV via Sentinel-1)
+    print("       Fetching Sentinel-1 (Radar) and computing backscatter dB...")
+    search_s1 = catalog.search(collections=["sentinel-1-rtc"], bbox=bbox, datetime=date_range)
+    items_s1 = list(search_s1.items())
+    if not items_s1:
+        raise Exception("No Sentinel-1 imagery found.")
+    item_s1 = items_s1[0]
+    
+    def sar_to_db(arr):
+        return 10 * np.log10(np.where(arr <= 0, np.nan, arr))
         
-        red = src_red.read(1, out_shape=dem.shape, window=win_s2, resampling=rasterio.enums.Resampling.bilinear).astype('float32')
-        nir = src_nir.read(1, out_shape=dem.shape, window=win_s2, resampling=rasterio.enums.Resampling.bilinear).astype('float32')
-        
-        ndvi = np.where((nir + red) == 0, np.nan, (nir - red) / (nir + red))
-        
-        profile_ndvi = src_red.profile
-        # Align NDVI exactly to the DEM's CRS and Transform so they overlay perfectly
-        profile_ndvi.update(dtype=rasterio.float32, count=1, nodata=np.nan, 
-                            height=dem.shape[0], width=dem.shape[1], 
-                            crs=profile['crs'], transform=profile['transform'])
-        
-        with rasterio.open(ndvi_path, 'w', **profile_ndvi) as dst:
-            dst.write(ndvi, 1)
-            
-    print("       [SUCCESS] Exported Raster layers (DEM & NDVI).")
-    return dem_path, ndvi_path, dem, ndvi, profile
+    sar_db = resample_to_master(item_s1.assets["vv"].href, native_process_func=sar_to_db)
+    
+    return dem, ndvi, sar_db, master_profile
 
 # ==========================================
-# 4. Advanced Vector-Raster GIS Overlay
+# 4. Vector-Raster Overlay & Statistics
 # ==========================================
-def run_gis_overlay(roads_gdf, ndvi_path, dem_path):
-    print("\n[INFO] Running Advanced Vector-Raster Overlay Analysis...")
+def export_and_analyze(roads_gdf, dem, ndvi, sar_db, profile):
+    print("\n[INFO] Running Zonal Statistics on 1km Human Impact Buffer...")
     
-    # 1. Reproject Roads to match a Metric CRS for accurate buffering in meters
+    # Export Rasters temporarily for zonal_stats
+    dem_path = os.path.join(OUT_DIR, "capstone_dem.tif")
+    ndvi_path = os.path.join(OUT_DIR, "capstone_ndvi.tif")
+    sar_path = os.path.join(OUT_DIR, "capstone_sar.tif")
+    
+    for path, arr in zip([dem_path, ndvi_path, sar_path], [dem, ndvi, sar_db]):
+        with rasterio.open(path, 'w', **profile) as dst:
+            dst.write(arr, 1)
+            
+    # Buffer Vectors
     roads_metric = roads_gdf.to_crs("EPSG:3857")
-    
-    # 2. Buffer the roads by 1000 meters (1km Impact Zone)
-    print("       Buffering infrastructure by 1000m...")
     road_buffers = roads_metric.copy()
     road_buffers['geometry'] = road_buffers.geometry.buffer(1000)
-    
-    # Dissolve overlapping buffers into a single massive impact zone
     impact_zone_metric = road_buffers.dissolve()
     
-    # 3. Reproject back to the Raster CRS for exact Zonal Statistics overlay
-    with rasterio.open(ndvi_path) as src:
-        raster_crs = src.crs
-    impact_zone = impact_zone_metric.to_crs(raster_crs)
-    road_buffers = road_buffers.to_crs(raster_crs)
-    impact_zone_path = os.path.join(OUT_DIR, "infrastructure_impact_zone.shp")
-    impact_zone.to_file(impact_zone_path)
+    impact_zone = impact_zone_metric.to_crs(profile['crs'])
+    impact_zone.to_file(os.path.join(OUT_DIR, "impact_zone.shp"))
     
-    # 3. Zonal Statistics (What is the NDVI and Elevation strictly inside the 1km human impact zone?)
-    print("       Extracting Zonal Statistics within impact zone...")
-    ndvi_stats = zonal_stats(impact_zone, ndvi_path, stats=['mean', 'min', 'max'])
-    dem_stats = zonal_stats(impact_zone, dem_path, stats=['mean', 'max'])
+    # Zonal Stats
+    print("       Extracting stats from DEM, NDVI, and SAR...")
+    stats_dem = zonal_stats(impact_zone, dem_path, stats=['mean', 'max'])[0]
+    stats_ndvi = zonal_stats(impact_zone, ndvi_path, stats=['mean', 'min', 'max'])[0]
+    stats_sar = zonal_stats(impact_zone, sar_path, stats=['mean'])[0]
     
-    return ndvi_stats[0], dem_stats[0], impact_zone_path, road_buffers
+    return stats_dem, stats_ndvi, stats_sar, road_buffers.to_crs(profile['crs'])
 
 # ==========================================
-# 5. Automated Reporting
+# 5. Reporting & Visualization
 # ==========================================
-def generate_report(ndvi_stats, dem_stats, bbox):
-    print("\n[INFO] Generating Automated Site Analysis Report...")
-    report_path = os.path.join(BASE_DIR, "site_analysis_report.md")
+def generate_outputs(bbox, dem, ndvi, sar, buffers, stats_dem, stats_ndvi, stats_sar):
+    print("\n[INFO] Generating Multi-Panel Chart and Markdown Report...")
     
+    # 1. Multi-Panel Chart
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # DEM
+    im0 = axes[0].imshow(dem, cmap='terrain')
+    axes[0].set_title("Copernicus DEM (Topography)")
+    fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+    buffers.plot(ax=axes[0], facecolor='none', edgecolor='red', linewidth=1)
+    
+    # NDVI
+    im1 = axes[1].imshow(ndvi, cmap='RdYlGn', vmin=-1, vmax=1)
+    axes[1].set_title("Sentinel-2 NDVI (Vegetation)")
+    fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+    buffers.plot(ax=axes[1], facecolor='none', edgecolor='black', linewidth=1)
+    
+    # SAR
+    im2 = axes[2].imshow(sar, cmap='gray')
+    axes[2].set_title("Sentinel-1 SAR (Structure/Water)")
+    fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+    buffers.plot(ax=axes[2], facecolor='none', edgecolor='cyan', linewidth=1)
+    
+    for ax in axes:
+        ax.axis('off')
+        
+    plot_path = os.path.join(OUT_DIR, "capstone_multi_panel.png")
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300)
+    
+    # 2. Markdown Report
+    report_path = os.path.join(BASE_DIR, "site_analysis_report.md")
     content = f"""# Capstone Site Analysis Report
     
 ## 📍 Territory Overview
-**Coordinates (BBOX):** {bbox}
+**Coordinates (BBOX):** `{bbox}`
 
-This report was generated automatically by the Python Cloud-Native Geospatial Pipeline. Real-world vector infrastructure was sourced dynamically from OpenStreetMap and overlaid onto Sentinel-2 and Copernicus DEM rasters.
+This report was generated dynamically via the **GeoCascade CLI Pipeline**. It synthesizes data across Optical, Radar, and Topographical satellite constellations, overlaid with OpenStreetMap road networks.
 
 ---
 
 ## 📊 Analytical Results: Human Impact Zone (1km Buffer)
+We buffered all local roads by 1000 meters to analyze the environmental conditions directly exposed to human activity.
 
-We buffered all local roads and infrastructure by 1000 meters to analyze the environmental conditions directly exposed to human activity.
-
-*   **Average Vegetation Health (NDVI) in Impact Zone:** `{ndvi_stats['mean']:.3f}`
-    *   *Minimum NDVI:* `{ndvi_stats['min']:.3f}` (Indicates paved roads, bare rock, or water)
-    *   *Maximum NDVI:* `{ndvi_stats['max']:.3f}` (Indicates dense, healthy forest patches near roads)
-*   **Terrain Profile of Impact Zone:**
-    *   *Average Elevation:* `{dem_stats['mean']:.1f} meters`
-    *   *Maximum Elevation Reached by Roads:* `{dem_stats['max']:.1f} meters`
+*   **Average Vegetation Health (NDVI):** `{stats_ndvi['mean']:.3f}` (Max: `{stats_ndvi['max']:.3f}`)
+*   **Terrain Profile (Elevation):** `{stats_dem['mean']:.1f}m` average, peaking at `{stats_dem['max']:.1f}m`.
+*   **Radar Backscatter (SAR VV):** `{stats_sar['mean']:.1f} dB`
+    *   *Interpretation:* High dB indicates rough terrain or urban structures. Very low dB (< -18) indicates standing water or smooth ice near the roads.
 
 ---
 
 ## 🗺️ GIS Data Deliverables
-The following files have been generated in the `data/processed/` directory and are ready for **ArcGIS Pro** or **ENVI**:
-1.  `infrastructure_roads.shp` (Raw OSM Vector Network)
-2.  `infrastructure_impact_zone.shp` (1km Dissolved Buffer)
-3.  `capstone_dem.tif` (Digital Elevation Model)
-4.  `capstone_ndvi.tif` (Sentinel-2 Vegetation Health)
+The following files are ready for ArcGIS Pro / ENVI in the `data/processed/` directory:
+1.  `infrastructure_roads.shp` / `impact_zone.shp`
+2.  `capstone_dem.tif`, `capstone_ndvi.tif`, `capstone_sar.tif`
 
-**Recommended Actions:** Load the `.shp` buffers over the `ndvi.tif` in your GIS software to visually verify these statistical anomalies.
+*Report auto-generated by the Agentic Python Pipeline.*
 """
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(content)
         
-    print(f"       [SUCCESS] Report saved to {report_path}")
+    print(f"       [SUCCESS] Outputs saved to {OUT_DIR}")
 
 def main():
     print("=======================================================")
-    print(" GEOCASCADE PIPELINE - ROBUST CAPSTONE PROJECT         ")
+    print(" GEOCASCADE PIPELINE - MULTI-SENSOR CAPSTONE CLI       ")
     print("=======================================================")
+    
+    args = parse_args()
+    
     try:
-        roads_gdf, roads_shp = fetch_infrastructure_vector(BBOX)
-        dem_path, ndvi_path, dem, ndvi, profile = fetch_rasters(BBOX)
-        ndvi_stats, dem_stats, impact_zone_path, road_buffers = run_gis_overlay(roads_gdf, ndvi_path, dem_path)
+        roads_gdf = fetch_infrastructure(args.bbox)
+        dem, ndvi, sar_db, profile = fetch_and_fuse_rasters(args.bbox, args.date_range)
+        stats_dem, stats_ndvi, stats_sar, buffers = export_and_analyze(roads_gdf, dem, ndvi, sar_db, profile)
+        generate_outputs(args.bbox, dem, ndvi, sar_db, buffers, stats_dem, stats_ndvi, stats_sar)
+        print("\n[SUCCESS] Capstone Execution Complete!")
         
-        # Plotting the visualization
-        fig, ax = plt.subplots(figsize=(10, 10))
-        import rasterio.plot as rioplot
-        with rasterio.open(ndvi_path) as src:
-            rioplot.show(src, ax=ax, cmap='RdYlGn', title="Human Impact Zone (1km Buffer) overlay on NDVI")
-        
-        # Overlay the buffers
-        road_buffers.plot(ax=ax, facecolor='none', edgecolor='blue', linewidth=2)
-        plt.savefig(os.path.join(OUT_DIR, "capstone_overlay_map.png"), dpi=300)
-        
-        generate_report(ndvi_stats, dem_stats, BBOX)
-        print("\n[SUCCESS] Capstone Pipeline Execution Complete!")
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {e}")
 
