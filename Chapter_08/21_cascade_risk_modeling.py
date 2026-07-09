@@ -31,18 +31,18 @@ def load_data_cube():
         
     with rasterio.open(IN_CUBE) as src:
         # Band 1: NIR, Band 2: SAR dB, Band 3: DEM, Band 4: LST
-        img_stack = src.read()
+        img_stack = src.read().astype('float32')
         profile = src.profile
-        
-    # We must reshape the 3D stack (Bands, Height, Width) into a 2D matrix (Pixels, Features) for scikit-learn
+        nodata_val = src.nodata if src.nodata is not None else -9999
+
     n_bands, height, width = img_stack.shape
-    X_raw = img_stack.reshape(n_bands, -1).T  # Transpose to get Shape: (n_pixels, n_bands)
-    
-    # Remove NaN values (NoData boundaries or clouds)
-    valid_mask = ~np.isnan(X_raw).any(axis=1)
+    X_raw = img_stack.reshape(n_bands, -1).T  # Shape: (n_pixels, n_bands)
+
+    # Valid pixels: not NoData and not NaN
+    valid_mask = ~(np.isnan(X_raw).any(axis=1) | (X_raw == nodata_val).any(axis=1))
     X_valid = X_raw[valid_mask]
-    
-    print(f"       [SUCCESS] Flattened array. Valid pixels to classify: {X_valid.shape[0]}")
+
+    print(f"       [SUCCESS] Flattened array. Valid pixels to classify: {X_valid.shape[0]:,}")
     return X_valid, valid_mask, height, width, profile
 
 # ==========================================
@@ -95,13 +95,18 @@ def generate_training_data(X_valid):
 # 4. Train Random Forest & Predict
 # ==========================================
 def run_machine_learning(X_train, y_train, X_valid, valid_mask, height, width, profile):
-    print("\n[INFO] Training Random Forest Classifier (100 Trees)...")
-    # n_jobs=-1 uses all CPU cores
-    rf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+    print("\n[INFO] Training Random Forest Classifier (100 Trees, OOB scoring)...")
+    # n_jobs=-1 uses all CPU cores; oob_score=True gives free cross-validation estimate
+    rf = RandomForestClassifier(
+        n_estimators=100, max_depth=10, random_state=42,
+        n_jobs=-1, oob_score=True
+    )
     rf.fit(X_train, y_train)
-    
-    print("[INFO] Predicting Classes for all pixels in the Data Cube...")
-    y_pred = rf.predict(X_valid)
+    print(f"       [SUCCESS] OOB Accuracy (free cross-validation): {rf.oob_score_:.3f}")
+
+    print("[INFO] Predicting classes + class probabilities for all valid pixels...")
+    y_pred     = rf.predict(X_valid)
+    y_proba    = rf.predict_proba(X_valid)  # shape: (n_valid, n_classes)
     
     # Feature Importance — a key ML teaching moment missing from original version
     print("\n[INFO] Random Forest Feature Importances:")
@@ -110,16 +115,35 @@ def run_machine_learning(X_train, y_train, X_valid, valid_mask, height, width, p
         bar = '█' * int(imp * 50)
         print(f"       {name:25s}: {bar} {imp:.3f}")
     
-    # Reconstruct the 2D image from the 1D predictions
-    prediction_img = np.zeros((height, width), dtype=np.uint8)
-    prediction_img.flat[valid_mask] = y_pred
-    
-    # 5. Export Geocoded Prediction
-    profile.update(count=1, dtype=rasterio.uint8, nodata=0)
+    # Reconstruct 2D classification image
+    prediction_img = np.full((height, width), 255, dtype=np.uint8)  # 255 = NoData
+    flat_indices = np.where(valid_mask)[0]
+    for i, idx in enumerate(flat_indices):
+        row, col = divmod(idx, width)
+        prediction_img[row, col] = int(y_pred[i])
+
+    # 5a. Export geocoded classification TIFF
+    out_profile = profile.copy()
+    out_profile.update(count=1, dtype=rasterio.uint8, nodata=255)
     out_tif = os.path.join(OUT_DIR, "cascade_ml_prediction.tif")
-    with rasterio.open(out_tif, 'w', **profile) as dst:
+    with rasterio.open(out_tif, 'w', **out_profile) as dst:
         dst.write(prediction_img, 1)
-    print(f"       [SUCCESS] Classified Geocoded TIFF saved to: {out_tif}")
+    print(f"       [SUCCESS] Classification TIFF saved: {out_tif}")
+
+    # 5b. Tier 3: export Glacier/Ice probability map (class 2) as a float32 GeoTIFF
+    # This is the most scientifically useful output for risk mapping and comparison
+    glacier_class_idx = list(rf.classes_).index(2) if 2 in rf.classes_ else None
+    if glacier_class_idx is not None:
+        prob_img = np.full((height, width), -9999, dtype=np.float32)
+        for i, idx in enumerate(flat_indices):
+            row, col = divmod(idx, width)
+            prob_img[row, col] = y_proba[i, glacier_class_idx]
+        prob_profile = profile.copy()
+        prob_profile.update(count=1, dtype=rasterio.float32, nodata=-9999)
+        prob_tif = os.path.join(OUT_DIR, "glacier_probability_map.tif")
+        with rasterio.open(prob_tif, 'w', **prob_profile) as dst:
+            dst.write(prob_img, 1)
+        print(f"       [SUCCESS] Glacier probability TIFF saved: {prob_tif}")
     
     # Land cover pixel count summary
     print("\n[INFO] Land Cover Summary:")
@@ -129,22 +153,18 @@ def run_machine_learning(X_train, y_train, X_valid, valid_mask, height, width, p
         pct   = 100.0 * count / prediction_img.size
         print(f"       {cls_name:22s}: {count:7d} px ({pct:.1f}%)")
     
-    # 6. Plotting
     print("\n[INFO] Generating Visualization...")
-    plt.figure(figsize=(10, 8))
-    
-    # Define colors: 0=Black(NoData), 1=Blue(Water), 2=Cyan(Glacier), 3=Green(Land)
-    cmap = ListedColormap(['black', 'blue', 'cyan', 'forestgreen'])
-    
-    im = plt.imshow(prediction_img, cmap=cmap, vmin=0, vmax=3)
-    cbar = plt.colorbar(im, ticks=[0, 1, 2, 3], shrink=0.7)
-    cbar.ax.set_yticklabels(['NoData', 'Water', 'Glaciers/Ice', 'Land/Vegetation'])
-    
-    plt.title("Multi-Sensor Machine Learning (Random Forest)\nOptical + Radar + Thermal + Elevation", fontsize=14)
-    plt.axis('off')
-    
+    cmap = ListedColormap(['#222222', '#1f77b4', '#00d4ff', '#2ca02c'])
+    fig, ax = plt.subplots(figsize=(10, 8))
+    im = ax.imshow(prediction_img, cmap=cmap, vmin=0, vmax=3)
+    cbar = fig.colorbar(im, ax=ax, ticks=[0, 1, 2, 3], shrink=0.7)
+    cbar.ax.set_yticklabels(['NoData', 'Water', 'Glacier/Ice', 'Land/Vegetation'])
+    ax.set_title("Multi-Sensor Random Forest Classification\n"
+                 "Optical + Radar + DEM + Thermal", fontsize=14)
+    ax.axis('off')
     plot_path = os.path.join(OUT_DIR, "cascade_ml_prediction.png")
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak
     print(f"       [SUCCESS] Map saved to: {plot_path}")
 
 def main():

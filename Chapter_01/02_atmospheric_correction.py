@@ -16,6 +16,7 @@ mamba install -n geocascade_env -c conda-forge rasterio numpy pystac-client plan
 
 import os
 import glob
+import shutil          # moved from inside loop — top-level import is best practice
 import rasterio
 import numpy as np
 import math
@@ -31,9 +32,20 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "data", "processed", "boa_corrected")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def find_latest_sentinel_dir():
+    # IMPORTANT: This script expects Sentinel-2 L1C (Top-of-Atmosphere) raw bands.
+    # Script 01_stac_multisensor_download.py downloads L2A (already atmospherically corrected).
+    # NEVER apply COST correction to L2A data — it would double-correct and produce wrong results.
+    #
+    # To use this script:
+    #   1. Download L1C data manually from https://scihub.copernicus.eu
+    #   2. Place it in data/raw/ with the naming convention sentinel2_l1c_<scene_id>/
     s2_dirs = glob.glob(os.path.join(INPUT_DIR, "sentinel2_l1c_*"))
     if not s2_dirs:
-        raise FileNotFoundError("No Sentinel-2 L1C raw data found. Run script 01 first.")
+        raise FileNotFoundError(
+            "No Sentinel-2 L1C raw data found in data/raw/sentinel2_l1c_*/\n"
+            "Script 01 downloads L2A (already corrected). This script needs L1C.\n"
+            "Download L1C manually from: https://scihub.copernicus.eu"
+        )
     return max(s2_dirs, key=os.path.getmtime)
 
 def fetch_stac_metadata(item_id):
@@ -49,37 +61,42 @@ def fetch_stac_metadata(item_id):
 # 2. COST Model Correction (Improved DOS)
 # ==========================================
 def apply_cost_correction(input_raster, output_raster, zenith_deg):
+    """
+    Apply COST Model (Chavez, 1996) atmospheric correction to a single Sentinel-2 band.
+
+    IMPORTANT — Scale Factor:
+    Sentinel-2 L1C DN values are scaled by 10,000. This script operates on raw DN
+    (0–65535 range) and leaves the output in the same scaled DN units after correction.
+    For true physical reflectance [0–1], divide output by 10,000 downstream.
+    The COST transmittance division here corrects for atmospheric absorption but does
+    NOT normalize to physical reflectance units.
+    """
     with rasterio.open(input_raster) as src:
         meta = src.meta.copy()
         band_data = src.read(1, masked=True)
-        
-        # 1. Identify the Dark Object (Using 1st percentile to avoid outlier 0s)
-        # Chavez (1988) assumes the dark object is rarely 0%, usually ~1% reflectance.
-        # Since Sentinel-2 is scaled by 10000, 1% reflectance = 100.
+
+        # 1. Dark Object Subtraction (Chavez 1988): 1st percentile ≈ 1% reflectance = 100 DN
         valid_pixels = band_data.compressed()
         if len(valid_pixels) == 0:
             dark_pixel = 0
         else:
             dark_pixel = np.percentile(valid_pixels, 1)
-            
+
         haze = max(0, dark_pixel - 100)
-        
+
         band_name = os.path.basename(input_raster)
         print(f"       [{band_name}] Dark Pixel: {dark_pixel:.0f} | Haze Subtracted: {haze:.0f}")
-        
-        # 2. Subtract the haze value (Path Radiance)
+
+        # 2. Subtract path radiance
         corrected_data = band_data - haze
-        
-        # 3. Apply the COST Transmittance Model (Chavez, 1996)
-        # Atmospheric Transmittance (T) is approximated as cos(Solar Zenith)
+
+        # 3. COST Transmittance: T = cos(Solar Zenith)
         transmittance = math.cos(math.radians(zenith_deg))
-        
-        # This division raises the reflectance of bright pixels, modeling atmospheric absorption!
         corrected_data = corrected_data / transmittance
-        
-        # 4. Ensure no negative values and clip to valid uint16 range
+
+        # 4. Clip and write
         corrected_data = np.clip(corrected_data, 0, 65535)
-        
+
         meta.update(dtype=rasterio.uint16, count=1, compress='lzw')
         with rasterio.open(output_raster, 'w', **meta) as dst:
             dst.write(corrected_data.filled(0).astype(rasterio.uint16), 1)
@@ -130,8 +147,7 @@ def main():
         
         if skip_band:
             print(f"       [{band_filename}] ⏭️ Skipped COST correction. Physically inappropriate for this wavelength.")
-            import shutil
-            shutil.copy(tif, out_tif)
+            shutil.copy(tif, out_tif)   # shutil imported at top of file
             continue
             
         apply_cost_correction(tif, out_tif, zenith_deg)

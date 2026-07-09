@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+# rasterio imported here for the DEM-based prediction step (Step 3 placeholder)
 import rasterio
 
 # ==========================================
@@ -40,39 +41,38 @@ os.makedirs(OUT_DIR, exist_ok=True)
 def detect_and_clean_anomalies(df):
     print("\n[INFO] Step 1: Running Isolation Forest Anomaly Detection on Station Data...")
     
-    # We look for anomalies in the temperature readings
-    X_temp = df[['temp_celsius']].values
-    
-    # Initialize Isolation Forest
-    # contamination=0.1 means we expect roughly 10% of the data might be errors
+    # Guard against NaN temperatures before fitting IsolationForest
+    df_clean = df.dropna(subset=['temp_celsius'])
+    if len(df_clean) < len(df):
+        print(f"       [WARNING] Dropped {len(df) - len(df_clean)} rows with NaN temperatures before anomaly detection.")
+
+    X_temp = df_clean[['temp_celsius']].values
+
     iso_forest = IsolationForest(contamination=0.15, random_state=42)
+    df_clean = df_clean.copy()
+    df_clean['anomaly_score'] = iso_forest.fit_predict(X_temp)
     
-    # Fit and predict (-1 = anomaly, 1 = normal)
-    df['anomaly_score'] = iso_forest.fit_predict(X_temp)
-    
-    # --- MANUAL VALIDATION (Visual QA/QC) ---
-    normal_data = df[df['anomaly_score'] == 1]
-    anomalies = df[df['anomaly_score'] == -1]
-    
-    print(f"       Found {len(anomalies)} anomalous records out of {len(df)} total.")
+    normal_data = df_clean[df_clean['anomaly_score'] == 1]
+    anomalies   = df_clean[df_clean['anomaly_score'] == -1]
+
+    print(f"       Found {len(anomalies)} anomalous records out of {len(df_clean)} total.")
     for idx, row in anomalies.iterrows():
         print(f"       [FLAGGED] Station {row['station_id']}: {row['temp_celsius']}°C")
-        
-    # Plotting for manual expert validation
-    plt.figure(figsize=(8, 5))
+
+    fig = plt.figure(figsize=(8, 5))
     plt.scatter(normal_data['elevation'], normal_data['temp_celsius'], c='blue', label='Normal (Valid)')
-    plt.scatter(anomalies['elevation'], anomalies['temp_celsius'], c='red', label='Anomaly (Sensor Error)', marker='x', s=100)
+    plt.scatter(anomalies['elevation'],   anomalies['temp_celsius'],   c='red',  label='Anomaly (Sensor Error)', marker='x', s=100)
     plt.title("Manual Validation: Elevation vs Temperature Anomalies")
     plt.xlabel("Elevation (m)")
     plt.ylabel("Temperature (°C)")
     plt.legend()
     plt.grid(True)
-    
+
     plot_path = os.path.join(OUT_DIR, "anomaly_validation_plot.png")
-    plt.savefig(plot_path)
+    plt.savefig(plot_path, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [ACTION] Validation plot saved to: {plot_path}. Please review manually.")
-    
-    # Return only the cleaned data for interpolation
+
     return normal_data.drop(columns=['anomaly_score'])
 
 
@@ -94,7 +94,9 @@ def train_interpolation_model(cleaned_df):
     
     predictions = rf_model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
-    print(f"       [SUCCESS] Model trained. Test Mean Squared Error (MSE): {mse:.2f}°C")
+    rmse = np.sqrt(mse)
+    print(f"       [SUCCESS] Model trained. Test RMSE: {rmse:.2f} °C  (MSE={mse:.2f} °C²)")
+    # Note: RMSE is in the same unit as the target (°C). MSE is in °C² — not directly interpretable.
     
     return rf_model
 

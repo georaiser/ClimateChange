@@ -67,12 +67,16 @@ def fetch_local_dem():
         dem = src.read(1, window=window)
         profile = src.profile
         profile.update({
-            'driver': 'GTiff', 'height': window.height, 'width': window.width,
+            'driver': 'GTiff',
+            'dtype': 'float32',
+            'nodata': -9999,          # explicit nodata so pysheds doesn't misread fill boundaries
+            'height': int(round(window.height)),
+            'width': int(round(window.width)),
             'transform': rasterio.windows.transform(window, src.transform)
         })
-        
+
         with rasterio.open(TEMP_DEM, 'w', **profile) as dst:
-            dst.write(dem, 1)
+            dst.write(np.nan_to_num(dem.astype('float32'), nan=-9999), 1)
 
 # ==========================================
 # 3. Hydrological Modeling (pysheds)
@@ -131,7 +135,11 @@ def delineate_watershed():
     # Panel 3: River Network (Log Scale Flow Accumulation)
     axs[1, 0].imshow(dem, cmap='gray', alpha=0.5)
     acc_map = np.where(acc > 1000, acc, np.nan)
-    im3 = axs[1, 0].imshow(acc_map, cmap='Blues', norm=colors.LogNorm(vmin=1000, vmax=acc.max()))
+    acc_max = float(np.nanmax(acc_map)) if np.any(np.isfinite(acc_map)) else 1001.0
+    if acc_max <= 1000:   # degenerate DEM — guard against LogNorm(vmax<=vmin)
+        acc_max = 1001.0
+    im3 = axs[1, 0].imshow(acc_map, cmap='Blues',
+                            norm=colors.LogNorm(vmin=1000, vmax=acc_max))
     axs[1, 0].set_title('River Network (Flow Accumulation > 1000 pixels)')
     fig.colorbar(im3, ax=axs[1, 0], shrink=0.7)
     axs[1, 0].axis('off')
@@ -160,6 +168,7 @@ def delineate_watershed():
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "watershed_analysis.png")
     plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Watershed map (with Hipsometric Curve) saved to: {plot_path}")
 
 def main():

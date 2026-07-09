@@ -73,12 +73,12 @@ def fetch_base_grid(catalog):
         # This profile becomes our MASTER GRID for all other sensors
         master_profile = src.profile.copy()
         master_profile.update(
-            height=window.height,
-            width=window.width,
+            height=int(round(window.height)),
+            width=int(round(window.width)),
             transform=transform,
-            count=4, # We will stack 4 bands total
+            count=4,              # 4-band data cube
             dtype=rasterio.float32,
-            nodata=np.nan
+            nodata=-9999          # ArcGIS/ENVI compatible; avoids np.nan GDAL issues
         )
         return nir_array, master_profile
 
@@ -151,42 +151,64 @@ def main():
     # 4. MODIS LST (Thermal)
     # MODIS requires downloading first due to HDF container complexities in GDAL
     search = catalog.search(collections=["modis-11A1-061"], bbox=BBOX, datetime=DATE_RANGE)
-    modis_item = list(search.items())[-1]
-    modis_tmp = os.path.join(TMP_DIR, "modis_tmp.tif")
-    urllib.request.urlretrieve(modis_item.assets["LST_Day_1km"].href, modis_tmp)
-    
-    print("\n[INFO] Fetching and Resampling MODIS LST (Thermal 1km)...")
-    dest_modis = np.zeros((int(master_profile['height']), int(master_profile['width'])), dtype=np.float32)
-    with rasterio.open(modis_tmp) as src:
-        reproject(
-            source=rasterio.band(src, 1),
-            destination=dest_modis,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            dst_transform=master_profile['transform'],
-            dst_crs=master_profile['crs'],
-            resampling=Resampling.bilinear
+    modis_items = list(search.items())
+    if not modis_items:
+        print("       [WARNING] No MODIS LST found — filling thermal band with NoData.")
+        lst_celsius = np.full(
+            (int(master_profile['height']), int(master_profile['width'])), -9999, dtype=np.float32
         )
-    lst_celsius = process_modis(dest_modis)
-    print("       [SUCCESS] Resampled to match Master 10m Grid.")
+    else:
+        modis_item = modis_items[-1]
+        modis_tmp = os.path.join(TMP_DIR, "modis_tmp.tif")
+        urllib.request.urlretrieve(modis_item.assets["LST_Day_1km"].href, modis_tmp)
+
+        print("\n[INFO] Fetching and Resampling MODIS LST (Thermal 1km)...")
+        dest_modis = np.zeros((int(master_profile['height']), int(master_profile['width'])), dtype=np.float32)
+        with rasterio.open(modis_tmp) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=dest_modis,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                dst_transform=master_profile['transform'],
+                dst_crs=master_profile['crs'],
+                resampling=Resampling.bilinear
+            )
+        lst_celsius = process_modis(dest_modis)
+        print("       [SUCCESS] Resampled to match Master 10m Grid.")
 
     # 5. Build and Export the Data Cube
     print("\n[INFO] Stacking aligned layers into multidimensional Data Cube...")
     out_path = os.path.join(OUT_DIR, "cascade_master_stack.tif")
-    
+
+    def _to_nodata(arr):
+        """Replace NaN and Inf with the profile nodata value (-9999) before writing."""
+        return np.nan_to_num(arr, nan=-9999, posinf=-9999, neginf=-9999).astype('float32')
+
     with rasterio.open(out_path, 'w', **master_profile) as dst:
-        dst.set_band_description(1, "S2_NIR")
-        dst.set_band_description(2, "S1_SAR_VV_dB")
-        dst.set_band_description(3, "DEM_Elevation")
-        dst.set_band_description(4, "MODIS_LST_Celsius")
-        
-        dst.write(nir_array, 1)
-        dst.write(sar_db, 2)
-        dst.write(dem, 3)
-        dst.write(lst_celsius, 4)
-        
+        dst.set_band_description(1, "S2_NIR_B08 (10m)")
+        dst.set_band_description(2, "S1_SAR_VV_dB (10m resampled)")
+        dst.set_band_description(3, "CopDEM_Elevation_m (10m resampled)")
+        dst.set_band_description(4, "MODIS_LST_Celsius (1km resampled)")
+
+        dst.write(_to_nodata(nir_array),   1)
+        dst.write(_to_nodata(sar_db),      2)
+        dst.write(_to_nodata(dem),         3)
+        dst.write(_to_nodata(lst_celsius), 4)
+
     print(f"\n[SUCCESS] Fusion Complete! Saved Data Cube: {out_path}")
-    print("          The stack is now ready for Machine Learning (Random Forests).")
+
+    # --- Tier 3: Fusion Statistics Summary ---
+    bands = {'NIR': nir_array, 'SAR_dB': sar_db, 'DEM': dem, 'LST_C': lst_celsius}
+    print("\n--- FUSION CUBE STATISTICS ---")
+    for name, arr in bands.items():
+        valid = arr[np.isfinite(arr)]
+        if valid.size > 0:
+            print(f"  {name:10s}: mean={np.mean(valid):8.2f}  std={np.std(valid):6.2f}  "
+                  f"min={np.min(valid):8.2f}  max={np.max(valid):8.2f}")
+        else:
+            print(f"  {name:10s}: all NoData")
+    print("\n  Stack is ready for Machine Learning (Random Forests, Ch 8+).")
 
 if __name__ == "__main__":
     main()

@@ -42,7 +42,10 @@ def process_isotherms():
     catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
     
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
-    item_dem = list(search_dem.items())[0]
+    items_dem = list(search_dem.items())
+    if not items_dem:
+        raise RuntimeError("No DEM tiles found for BBOX. Check coordinates or Planetary Computer access.")
+    item_dem = items_dem[0]
     
     with rasterio.open(item_dem.assets["data"].href) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
@@ -53,8 +56,14 @@ def process_isotherms():
         
         dem = src.read(1, window=window).astype('float32')
         dem = np.where(dem < 0, np.nan, dem)
+        raster_crs = src.crs        # CRITICAL: capture CRS inside the with-block
+        raster_transform = rasterio.windows.transform(window, src.transform)
         profile = src.profile
-        profile.update(dtype=rasterio.float32, count=1, nodata=np.nan, height=window.height, width=window.width, transform=transform)
+        profile.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
+            transform=raster_transform
+        )
 
     print("\n[INFO] Applying Environmental Lapse Rate (-6.5°C / 1000m)...")
     # Assume base sea level temp in summer is 15°C
@@ -89,7 +98,10 @@ def process_isotherms():
     if hasattr(cs, 'collections'):
         for level, collection in zip(cs.levels, cs.collections):
             for path in collection.get_paths():
-                for v in path.to_polygons():
+                # CRITICAL: use closed_only=False — isotherms are OPEN LineStrings,
+                # not closed polygons. to_polygons() without this argument forces
+                # closure, creating spurious line segments connecting endpoints.
+                for v in path.to_polygons(closed_only=False):
                     if len(v) >= 2:
                         lines.append(LineString(v))
                         temps.append(level)
@@ -102,8 +114,11 @@ def process_isotherms():
                     
     plt.close(fig) # We don't need this figure, just the math
     
-    # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame({'Temperature': temps, 'geometry': lines}, crs=src.crs)
+    # CRITICAL: use raster_crs captured inside the with-block (above).
+    # Accessing src.crs here (after the with-block closed) is undefined behaviour.
+    if not lines:
+        print("       [WARNING] No isoline segments found. Check temperature range.")
+    gdf = gpd.GeoDataFrame({'Temperature': temps, 'geometry': lines}, crs=raster_crs)
     
     shp_path = os.path.join(OUT_DIR, "isotherms.shp")
     gdf.to_file(shp_path)
@@ -118,7 +133,8 @@ def process_isotherms():
     fig.colorbar(im, ax=ax, label="Temperature (°C)")
     
     plot_path = os.path.join(OUT_DIR, "isotherms_map.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Plot saved to: {plot_path}")
 
 

@@ -51,7 +51,10 @@ def fetch_environmental_layers():
     # 1. Fetch Elevation (DEM)
     print("       Fetching 3D Terrain Data (Copernicus DEM)...")
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
-    item_dem = list(search_dem.items())[0]
+    items_dem = list(search_dem.items())
+    if not items_dem:
+        raise RuntimeError("No DEM found for BBOX. Check coordinates or Planetary Computer access.")
+    item_dem = items_dem[0]
     
     with rasterio.open(item_dem.assets["data"].href) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
@@ -59,23 +62,27 @@ def fetch_environmental_layers():
         maxx, maxy = transformer.transform(BBOX[2], BBOX[3])
         window_dem = from_bounds(minx, miny, maxx, maxy, src.transform)
         dem = src.read(1, window=window_dem).astype('float32')
-        dem = np.where(dem < 0, 0, dem) # Floor sea level
-        
-        # Calculate Slope
-        dy, dx = np.gradient(dem, 30.0, 30.0)
-        slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
-        
+        dem = np.where(dem < 0, 0, dem)  # floor sea level
+
+        # CRITICAL: convert geographic pixel size (degrees) to metres before np.gradient.
+        # CopDEM is EPSG:4326. At ~51°S: 1° lat ≈ 111 km, 1° lon ≈ 70 km.
+        pix_lat_m = abs(src.res[0]) * 111_000.0
+        pix_lon_m = abs(src.res[1]) * 111_000.0 * np.cos(np.radians(-51.0))
+
         target_shape = dem.shape
         target_transform = rasterio.windows.transform(window_dem, src.transform)
         target_crs = src.crs
-        
-        # Save profile for TIFF export
+
+        # nodata=-9999 for ArcGIS/ENVI compatibility (np.nan is unreliable in GDAL)
         profile = src.profile
         profile.update(
-            dtype=rasterio.float32, count=1, nodata=np.nan,
-            height=target_shape[0], width=target_shape[1],
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window_dem.height)), width=int(round(window_dem.width)),
             transform=target_transform
         )
+
+    dy, dx = np.gradient(dem, pix_lat_m, pix_lon_m)
+    slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
 
     # 2. Fetch Vegetation (Sentinel-2 NDVI)
     print("       Fetching Vegetation Data (Sentinel-2)...")
@@ -131,9 +138,10 @@ def run_kmeans_classification(dem, slope, ndvi, profile):
     km_map.flat[np.where(valid_mask)[0]] = labels
     
     out_tif = os.path.join(OUT_DIR, "kmeans_unsupervised.tif")
-    profile.update(dtype=rasterio.float32, nodata=np.nan)
+    profile.update(dtype=rasterio.float32, nodata=-9999)
     with rasterio.open(out_tif, 'w', **profile) as dst:
-        dst.write(km_map.astype('float32'), 1)
+        km_out = np.where(np.isnan(km_map), -9999, km_map).astype('float32')
+        dst.write(km_out, 1)
     print(f"       [SUCCESS] K-Means TIFF saved: {out_tif}")
     return km_map
 
@@ -183,8 +191,11 @@ def train_and_predict_niche(dem, slope, ndvi, profile):
         print(f"         {name:12s}: {bar} {imp:.3f}")
     
     print("\n[INFO] Predicting Habitat Probability across Torres del Paine...")
-    X_full = np.nan_to_num(X_full, 0)
-    probabilities = rf.predict_proba(X_full)[:, 1]
+    # Preserve NaN (ocean/cloud) pixels: replace only valid pixels, keep NaN elsewhere
+    valid_mask = np.isfinite(X_full).all(axis=1)
+    probabilities = np.full(len(X_full), np.nan)
+    X_valid = np.nan_to_num(X_full[valid_mask], 0)
+    probabilities[valid_mask] = rf.predict_proba(X_valid)[:, 1]
     niche_map = probabilities.reshape(dem.shape)
     
     print("\n[INFO] Exporting Geocoded TIFFs for ArcGIS/ENVI...")
@@ -221,6 +232,7 @@ def generate_plots(dem, niche_map, km_map, importances, feat_names):
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "ecological_niche_model.png")
     plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Chart saved: {plot_path}")
 
 def main():

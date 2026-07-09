@@ -54,9 +54,12 @@ def fetch_historical_precipitation():
         'date': pd.to_datetime(data['daily']['time']),
         'precip_mm': data['daily']['precipitation_sum']
     })
-    
-    # Drop any NaNs
-    df = df.dropna()
+
+    # Warn before dropping NaN days (ERA5 gaps can skew annual totals silently)
+    nan_count = df['precip_mm'].isna().sum()
+    if nan_count > 0:
+        print(f"       [WARNING] {nan_count} days have missing precipitation data and will be excluded from annual totals.")
+    df = df.dropna(subset=['precip_mm'])
     print(f"       [SUCCESS] Downloaded {len(df)} days of historical climate data!")
     return df
 
@@ -91,9 +94,17 @@ def analyze_climate_anomalies(df):
     # Sort cluster centers so 0=Drought, 1=Normal, 2=Flood
     centers = kmeans.cluster_centers_.flatten()
     sorted_idx = np.argsort(centers)
+    # Guard: assert 3 distinct clusters were found (can merge on low-variance data)
+    if len(set(sorted_idx)) != 3:
+        print("       [WARNING] K-Means produced degenerate clusters. Regime labels may be inaccurate.")
     mapping = {sorted_idx[0]: 'Drought', sorted_idx[1]: 'Normal', sorted_idx[2]: 'Flood'}
     annual_df['climate_regime'] = annual_df['cluster'].map(mapping)
-    
+
+    # Tier 3: export 30-year annual time series as CSV for downstream analysis
+    csv_path = os.path.join(OUT_DIR, "annual_precipitation_30yr.csv")
+    annual_df[['year', 'precip_mm', 'z_score', 'climate_regime']].to_csv(csv_path, index=False)
+    print(f"       [SUCCESS] Annual series exported: {csv_path}")
+
     return annual_df, mean_precip
 
 # ==========================================
@@ -131,7 +142,9 @@ def plot_results(annual_df, mean_precip):
     
     # Save plot
     plot_path = os.path.join(OUT_DIR, "30yr_precipitation_anomalies.png")
-    plt.savefig(plot_path, dpi=300)
+    fig = plt.gcf()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Plot saved to: {plot_path}")
 
 def main():

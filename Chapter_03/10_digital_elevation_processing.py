@@ -38,39 +38,42 @@ BBOX = [-73.30, -51.10, -72.90, -50.80]
 # ==========================================
 # 2. Mathematical Terrain Functions
 # ==========================================
-def calculate_slope_aspect(dem, cellsize=30.0):
-    # Calculate gradients (rate of change) in X and Y directions
-    dy, dx = np.gradient(dem, cellsize, cellsize)
-    
+def calculate_slope_aspect(dem, pix_lat_m, pix_lon_m):
+    """
+    Calculate slope and aspect from a DEM.
+
+    IMPORTANT: CopDEM is delivered in EPSG:4326 (geographic degrees).
+    np.gradient must receive cell sizes in METRES, not degrees.
+    At 51°S: 1° latitude ≈ 111,000 m, 1° longitude ≈ 70,000 m.
+    Passing cellsize=30.0 (degrees) underestimates gradient by ~3300×.
+    """
+    # gradient(dem, dy_m, dx_m) — row spacing first, then column spacing
+    dy, dx = np.gradient(dem, pix_lat_m, pix_lon_m)
+
     # Slope (in degrees)
-    # slope = arctan(sqrt(dx^2 + dy^2))
     slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
     slope_deg = np.degrees(slope_rad)
-    
-    # Aspect (in degrees from North)
-    # aspect = arctan2(dy, -dx)
+
+    # Aspect (in degrees from North, 0-360 compass bearing)
     aspect_rad = np.arctan2(dy, -dx)
     aspect_deg = np.degrees(aspect_rad)
-    
-    # Convert Aspect to 0-360 compass bearing (0 = North, 90 = East, etc.)
     aspect_deg = np.where(aspect_deg < 0, 360 + aspect_deg, aspect_deg)
-    aspect_deg = np.where(aspect_deg == 90, 0, aspect_deg) # Handle flat areas if needed
-    
+
     return slope_deg, aspect_deg, slope_rad, aspect_rad
 
 def calculate_hillshade(slope_rad, aspect_rad, azimuth=315.0, zenith=45.0):
-    # Convert sun angles to radians
+    """Standard ESRI hillshade formula. Output range: 0–255."""
     azimuth_rad = np.radians(360.0 - azimuth + 90.0)
     zenith_rad = np.radians(zenith)
-    
-    # The physics equation for Hillshade illumination
+
     shaded = (np.cos(zenith_rad) * np.cos(slope_rad) +
-              np.sin(zenith_rad) * np.sin(slope_rad) * 
+              np.sin(zenith_rad) * np.sin(slope_rad) *
               np.cos(azimuth_rad - aspect_rad))
-    
-    # Scale to 0-255 (8-bit grayscale image)
-    shaded = 255 * (shaded + 1) / 2
-    return np.clip(shaded, 0, 255)
+
+    # Clamp to [0,1] first (dot-product can exceed 1 at extreme geometry),
+    # then scale to 8-bit. Note: 255*(x+1)/2 is WRONG — it maps negative
+    # illumination (back-lit terrain) to non-zero values.
+    return np.clip(255 * shaded, 0, 255)
 
 # ==========================================
 # 3. Main Workflow
@@ -93,22 +96,46 @@ def process_terrain():
         minx, miny = transformer.transform(BBOX[0], BBOX[1])
         maxx, maxy = transformer.transform(BBOX[2], BBOX[3])
         window = from_bounds(minx, miny, maxx, maxy, src.transform)
-        
+
         dem = src.read(1, window=window).astype('float32')
-        
-        # Save profile for TIFF export
+        src_nodata = src.nodata   # capture INSIDE the with-block
+
+        # Pixel size in degrees (CopDEM is EPSG:4326)
+        pix_lat_deg = abs(src.res[0])   # row spacing in degrees
+        pix_lon_deg = abs(src.res[1])   # col spacing in degrees
+
+        # Save profile for TIFF export — use -9999 as nodata (ArcGIS/ENVI compatible)
         profile = src.profile
         profile.update(
-            dtype=rasterio.float32, count=1, nodata=np.nan,
-            height=window.height, width=window.width,
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
             transform=rasterio.windows.transform(window, src.transform)
         )
-        
-    # Mask out NoData/Ocean (Elevation <= 0)
-    dem = np.where(dem <= 0, np.nan, dem)
+
+    # Mask out actual nodata pixels (use the raster's nodata value, not a hard elevation threshold)
+    # Using <=0 would incorrectly remove valid sea-level terrain near the coast.
+    if src_nodata is not None:
+        dem = np.where(dem == src_nodata, np.nan, dem)
+    dem = np.where(dem < -500, np.nan, dem)  # secondary guard for extreme fill values
+
+    # -----------------------------------------------------------------------
+    # CRITICAL: Convert geographic pixel size (degrees) to metres before
+    # calling np.gradient. CopDEM is in EPSG:4326; passing cellsize=30.0
+    # (degrees) would underestimate slope by a factor of ~3300.
+    # At study latitude ~51°S:
+    #   1° latitude ≈ 111,000 m  (nearly constant)
+    #   1° longitude ≈ 111,000 × cos(51°) ≈ 69,800 m
+    # -----------------------------------------------------------------------
+    study_lat_rad = np.radians(-51.0)
+    lat_m_per_deg = 111_000.0
+    lon_m_per_deg = 111_000.0 * np.cos(study_lat_rad)
+    pix_lat_m = pix_lat_deg * lat_m_per_deg
+    pix_lon_m = pix_lon_deg * lon_m_per_deg
+
+    print(f"       DEM pixel size: {pix_lat_m:.1f} m (lat) × {pix_lon_m:.1f} m (lon)")
 
     print("\n[INFO] Calculating Terrain Derivatives (Slope & Aspect)...")
-    slope_deg, aspect_deg, slope_rad, aspect_rad = calculate_slope_aspect(dem, cellsize=30.0)
+    slope_deg, aspect_deg, slope_rad, aspect_rad = calculate_slope_aspect(dem, pix_lat_m, pix_lon_m)
     
     print("[INFO] Generating Hillshade (Azimuth 315, Zenith 45)...")
     hillshade = calculate_hillshade(slope_rad, aspect_rad)
@@ -147,7 +174,8 @@ def process_terrain():
     
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "terrain_derivatives.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Terrain map saved to: {plot_path}")
 
 def main():

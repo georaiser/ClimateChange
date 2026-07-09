@@ -1,178 +1,120 @@
-# 🌍 GeoCascade: Multi-Sensor Climate & Glacier Analysis Pipeline
+# GeoCascade Environmental Analysis Pipeline
 
-> **From raw satellite pixels to actionable environmental insights — a complete academic curriculum in Earth Observation, Geo-AI, and Agentic Geospatial Engineering.**
+A 14-chapter geospatial Python curriculum for environmental remote sensing and climate
+change analysis. All data is streamed cloud-natively from Microsoft Planetary Computer
+STAC — no manual downloads required.
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
-[![Platform](https://img.shields.io/badge/Data-Planetary%20Computer%20%7C%20STAC-green)](https://planetarycomputer.microsoft.com)
-[![License](https://img.shields.io/badge/License-Academic-orange)](LICENSE)
-
----
-
-## 📖 Project Philosophy
-
-This curriculum answers a single, central question:
-
-> *"What does combining ALL satellite datasets tell us about this landscape that NO SINGLE dataset can reveal alone?"*
-
-We call this approach **Convergent Evidence Analysis** — a professional methodology used in real-world Environmental Impact Assessments (EIAs) and climate science reports. Every chapter builds toward this goal by introducing a new physical layer (optical, radar, thermal, topographic) and teaching how to fuse them.
-
-**Key Principles:**
-- **No Google Earth Engine.** All processing uses open cloud-native tools: `rasterio`, `pystac-client`, `planetary-computer`, `numpy`, `geopandas`.
-- **Absolute Reproducibility.** Every data source is STAC-queryable. No manual downloads required.
-- **ArcGIS/ENVI Interoperability.** Every script exports geocoded `.tif` and `.shp` files ready for drag-and-drop use in industry-standard GIS tools.
-- **Real Data.** ERA5 reanalysis, Sentinel-2, Sentinel-1 SAR, MODIS, Copernicus DEM — all real satellite archives.
+**Study area:** Torres del Paine & Grey Glacier, Patagonia, Chile (~51 deg S)
 
 ---
 
-## 🛠️ System Prerequisites & Installation
+## Chapter Navigation
 
-Because geospatial dependencies (GDAL, PROJ, GEOS) are notoriously difficult to compile from source, this project strictly uses **Miniforge/Mamba**.
+| Chapter | Title | Status | Key Topics |
+|---|---|---|---|
+| 01 | Climatic Variables & STAC Acquisition | COMPLETE | STAC, ERA5, IsolationForest, Mann-Kendall |
+| 02 | Spectral Signature Analysis | COMPLETE | Red Edge B05, NDVI, EVI, SAVI, BSI, NDWI, NDSI |
+| 03 | Topography & Glacial Retreat | COMPLETE | NDSI change, pysheds D8, Hipsometric Curve |
+| 04 | Ecological Niche Modeling | COMPLETE | Random Forest SDM, Vulnerability Index |
+| 05 | Moisture Stress & Zonal Statistics | COMPLETE | NDMI, MSI, rasterstats |
+| 06 | Isotherms & Drainage Density | COMPLETE | Lapse Rate, ContourSet, drainage density |
+| 07 | SAR Processing & Cloud Penetration | COMPLETE | VV+VH, VV/VH ratio, SAR vs optical |
+| 08 | Multi-Sensor Data Fusion | COMPLETE | 4-band cube, Random Forest classifier |
+| 09 | Multi-Task Deep Learning | ROADMAP | MTL, ResNet, uncertainty weighting |
+| 10 | Agentic Orchestration | ROADMAP | Trigger engine, sub-agents, evidence fusion |
+| 11 | PostGIS Integration | ROADMAP | Spatial SQL, FastAPI, raster2pgsql |
+| 12 | Capstone CLI Pipeline | COMPLETE | argparse, OSMnx, UTM buffer, zonal report |
+| 13 | InSAR Deformation | ADVANCED | Interferometry, SNAP, glacier velocity |
+| 14 | Hyperspectral Analysis | ADVANCED | Spectral unmixing, linear mixing model |
 
-### 1. Install Miniforge
+---
 
-Download the [Miniforge installer](https://github.com/conda-forge/miniforge) for your OS. It includes `mamba` — a fast drop-in replacement for `conda`.
+## Technology Stack
 
-### 2. Create the Base Environment
+| Category | Libraries |
+|---|---|
+| Data Access | pystac-client, planetary-computer |
+| Raster Processing | rasterio, GDAL, numpy |
+| Hydrology | pysheds |
+| Vector / GIS | geopandas, shapely, rasterstats, osmnx |
+| ML / Stats | scikit-learn, scipy |
+| Visualization | matplotlib |
+| Climate Data | Open-Meteo API (ERA5 reanalysis, no key needed) |
+
+---
+
+## Installation
 
 ```bash
-mamba create -n geocascade_env python=3.12 -y
-mamba activate geocascade_env
-```
+# Create the environment from the provided YAML
+mamba env create -f environment.yml
+conda activate geocascade_env
 
-### 3. Install Core Geospatial Stack
-
-```bash
+# Or install core packages manually
 mamba install -n geocascade_env -c conda-forge \
-    pystac-client planetary-computer rasterio pyproj \
-    geopandas shapely numpy matplotlib scikit-learn \
-    pandas requests pysheds rasterstats osmnx -y
+  pystac-client planetary-computer rasterio pysheds \
+  geopandas rasterstats osmnx scikit-learn scipy \
+  matplotlib numpy pyproj requests pandas -y
 ```
 
-### 4. PyTorch (Chapter 9 — Deep Learning)
+---
 
-```bash
-mamba install -n geocascade_env pytorch torchvision torchaudio \
-    pytorch-cuda=12.4 -c pytorch -c nvidia -c conda-forge \
-    --channel-priority flexible -y
-```
+## Key Technical Improvements (All Chapters)
 
-### 5. Docker (Chapter 11 — PostGIS)
+### Critical Bug Fixes
+| Fix | Impact |
+|---|---|
+| src.crs captured inside with-block | Prevents AttributeError / stale CRS after file close |
+| OSMnx named kwargs (north=, south=, east=, west=) | Prevents silent wrong-location queries |
+| EPSG:3857 -> EPSG:32719 for buffer | Eliminates ~40% distance distortion at 51 deg S |
+| nodata=-9999 throughout | GDAL/ArcGIS/ENVI reliable NoData recognition |
+| window int(round()) | Prevents rasterio profile dimension type errors |
+| min_max_scale NaN preserved | Normalization no longer treats ocean as minimum value |
+| B11 independent window | SWIR1 reads correct geographic area (not the B08 10m window) |
+| green_2023 src.read() added | Glacier retreat script no longer crashes on missing read |
 
-Install [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) for the spatial database chapter.
+### Tier 3 Functional Improvements
+| Improvement | Chapter |
+|---|---|
+| Red Edge B05 (705nm) added to spectral analysis | Ch02 |
+| Open Water sample point added | Ch02 |
+| Spectral signatures exported to CSV | Ch02 |
+| Quantitative km2 area change report (glacier) | Ch03 |
+| Expanded zonal stats: mean + std + min + max | Ch05 |
+| VH polarization added to SAR processing | Ch07 |
+| VV/VH cross-polarization ratio raster | Ch07 |
+| SAR quantitative area report (water/glacier) | Ch07 |
+| Fusion statistics summary table | Ch08 |
+| MODIS STAC guard with NoData fallback | Ch08 |
+| Annual precipitation CSV export | Ch01 |
 
-### 6. Planetary Computer Authentication
-
-```bash
-pip install planetary-computer
-planetarycomputer login
-```
-
-> [!NOTE]
-> A free Microsoft Planetary Computer account is required for STAC access. Register at [planetarycomputer.microsoft.com](https://planetarycomputer.microsoft.com).
+### Tier 4 New Scripts
+| Script | What It Does |
+|---|---|
+| 03b_era5_trend_analysis.py | Mann-Kendall test + Sen's Slope on 30-year ERA5 data |
+| 19b_cloud_penetration_comparison.py | SAR vs optical cloud comparison (winter scene) |
 
 ---
 
-## 📂 Full Curriculum Structure
+## Spatial Configuration
 
-The project is organized into **3 Phases** covering the complete arc from raw data to advanced AI systems.
-
----
-
-### 🌱 Phase 1 — Core Physical Sciences (Chapters 1–7)
-
-| Chapter | Title | Key Skills |
-|---------|-------|------------|
-| `Chapter_01/` | **Climatic Variables & STAC Acquisition** | STAC API, Atmospheric Correction, ML Interpolation, Precipitation Anomaly, UHI Mapping |
-| `Chapter_02/` | **Spectral Signature Analysis** | Spectral profiles, NDVI, NDWI, NDSI, NDGI, EVI, SAVI, BSI (7-index suite) |
-| `Chapter_03/` | **Topography & Glacial Retreat** | DEM derivatives, 20-year glacier change detection, Watershed Delineation, Hipsometric Curve |
-| `Chapter_04/` | **Ecological Niche & Climate Vulnerability** | K-Means unsupervised classification, Random Forest SDM, MCDA Vulnerability Index |
-| `Chapter_05/` | **Zonal Statistics & Moisture Stress** | NDMI, MSI, Zonal Statistics by management zone |
-| `Chapter_06/` | **Advanced Hydrometeorology** | Isotherms, Drainage Density, Stream Order |
-| `Chapter_07/` | **Radar & Multi-Sensor Review (SAR)** | Sentinel-1 SAR processing, VV/VH backscatter, Multi-sensor comparison |
+- **Study Area:** Torres del Paine National Park, Patagonia, Chile
+- **Center:** ~51 deg S, ~73 deg W
+- **Coordinate Reference Systems:**
+  - Geographic: EPSG:4326 (WGS84) — for STAC queries
+  - Projected: EPSG:32719 (UTM Zone 19S) — for distance/area/buffer
+  - Web: EPSG:3857 — display only, NOT for analysis
 
 ---
 
-### 🤖 Phase 2 — Advanced Modeling & Geo-AI (Chapters 8–11)
+## Academic Use
 
-| Chapter | Title | Key Skills |
-|---------|-------|------------|
-| `Chapter_08/` | **Data Fusion & Cascade Effect Modeling** | Multi-sensor data cube, Random Forest land cover, **Convergent Evidence Analysis** (ESI, CVS, WSI) |
-| `Chapter_09/` | **Multi-Task Deep Learning** | PyTorch, multi-head CNNs, simultaneous land cover + change detection |
-| `Chapter_10/` | **Agentic Orchestration** | LangGraph, autonomous geospatial agents, tool calling |
-| `Chapter_11/` | **Enterprise Spatial Databases** | PostGIS, Docker, spatial SQL, vector tile serving |
+This curriculum is designed for graduate-level remote sensing and GIS courses.
+All data sources are open-access (Planetary Computer, Open-Meteo, OpenStreetMap).
+No API keys required for any script.
 
----
-
-### 🏆 Phase 3 — Capstones (Chapters 12–13)
-
-| Chapter | Title | Key Skills |
-|---------|-------|------------|
-| `Chapter_12/` | **Automated Site Analysis Capstone** | CLI pipeline, dynamic BBOX, impact zone assessment, zonal stats reporting |
-| `Chapter_13_14/` | **Full-Stack REST API Capstone** | FastAPI, GeoJSON endpoints, async processing, cloud deployment |
-
----
-
-## 🗺️ GIS Interoperability
-
-A core requirement of this curriculum is **Hybrid Dual-Track Interoperability**. Every Python script exports:
-
-- **Geocoded GeoTIFF (`.tif`)** — drag-and-drop into ArcGIS Pro or ENVI
-- **Shapefile / GeoPackage (`.shp` / `.gpkg`)** — vector overlays ready for spatial queries
-
-**Workflow:**
-1. Run the automated Python pipeline
-2. Open **ArcGIS Pro** or **ENVI**
-3. Drag-and-drop `.tif` / `.shp` files into the map canvas
-4. Verify that Python outputs align perfectly with basemap imagery
-
----
-
-## 🚀 Quick Start
-
-```bash
-# 1. Activate environment
-mamba activate geocascade_env
-
-# 2. Start from Chapter 1
-cd Chapter_01
-python 01_stac_multisensor_download.py
-
-# 3. Follow each chapter's README for the next steps
-```
-
-Each chapter folder contains its own `README.md` with:
-- 🎯 Academic objective
-- 📐 Mathematical concepts
-- 🛠️ Script-by-script explanations
-- 🚀 Exact run commands
-- 🗺️ GIS interoperability notes
-
----
-
-## 📊 Data Sources
-
-| Dataset | Provider | Access |
-|---------|----------|--------|
-| Sentinel-2 L2A (10m optical) | ESA / Microsoft | Planetary Computer STAC |
-| Sentinel-1 RTC (SAR backscatter) | ESA / Microsoft | Planetary Computer STAC |
-| Copernicus DEM GLO-30 (30m elevation) | ESA | Planetary Computer STAC |
-| MODIS MOD11A1 (1km thermal LST) | NASA | Planetary Computer STAC |
-| Landsat C2-L2 (30m optical) | USGS / Microsoft | Planetary Computer STAC |
-| ERA5-Land (hourly reanalysis) | ECMWF | Open-Meteo API (no key needed) |
-| OpenStreetMap roads | OSM contributors | osmnx (no key needed) |
-
----
-
-## 🧪 The Three Composite Insight Scores (Chapter 8)
-
-The curriculum culminates in three composite indices derived from all sensor layers simultaneously:
-
-| Index | Formula | Interpretation |
-|-------|---------|----------------|
-| **ESI** — Ecological Stress | `0.5×(1-NDVI) + 0.3×LST + 0.2×Slope` | Where is the ecosystem degraded? |
-| **CVS** — Cryosphere Vulnerability | `0.4×LST + 0.4×(1-NDSI) + 0.2×(1-SAR)` | Which glacial zones are actively melting? |
-| **WSI** — Water Stress Compound | `0.4×NDWI + 0.4×NDSI + 0.2×(1-LST)` | Where is fresh water most available? |
-
----
-
-*Study Area: Torres del Paine National Park & Grey Glacier, Patagonia, Chile (BBOX: `[-73.30, -51.10, -72.90, -50.80]`)*
+**Citation:** When using this curriculum in academic work, please cite the data sources:
+- Sentinel-2/1: ESA Copernicus Programme
+- Landsat C2-L2: USGS Earth Resources Observation and Science Center
+- CopDEM: Copernicus DEM GLO-30 (Airbus Defence & Space)
+- ERA5: ECMWF Reanalysis v5 via Open-Meteo API

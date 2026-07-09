@@ -90,24 +90,26 @@ def process_indices():
     if not items:
         raise ValueError("No cloud-free images found.")
         
-    item = items[0]
-    print(f"       [SUCCESS] Found Image: {item.id}")
+    item = sorted(items, key=lambda i: i.properties["eo:cloud_cover"])[0]
+    print(f"       [SUCCESS] Found Image: {item.id}  (Cloud: {item.properties['eo:cloud_cover']}%)")
     
     print("\n[INFO] Streaming BBOX pixel data directly from Microsoft Cloud...")
     
     from pyproj import Transformer
-    # Open B02 (Blue, 10m) first to establish the master pixel window for our BBOX
+    # Open B02 (Blue, 10m) first to establish the master 10m pixel window
     with rasterio.open(item.assets["B02"].href) as src:
-        transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-        minx, miny = transformer.transform(BBOX[0], BBOX[1])
-        maxx, maxy = transformer.transform(BBOX[2], BBOX[3])
+        transformer_10m = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+        minx, miny = transformer_10m.transform(BBOX[0], BBOX[1])
+        maxx, maxy = transformer_10m.transform(BBOX[2], BBOX[3])
         window = from_bounds(minx, miny, maxx, maxy, src.transform)
         transform = rasterio.windows.transform(window, src.transform)
+        target_shape = (int(round(window.height)), int(round(window.width)))
         profile = src.profile
-        profile.update(dtype=rasterio.float32, count=1, nodata=np.nan,
-                       height=int(window.height), width=int(window.width), transform=transform)
-        
-        # We need: Blue(B02), Green(B03), Red(B04), NIR(B08), SWIR1(B11)
+        # nodata=-9999 for ArcGIS/ENVI/GDAL compatibility (np.nan is unreliable)
+        profile.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=target_shape[0], width=target_shape[1], transform=transform
+        )
         print("       Reading Blue (B02, 10m)...")
         blue = src.read(1, window=window).astype('float32') / 10000.0
 
@@ -118,15 +120,24 @@ def process_indices():
     print("       Reading Red (B04, 10m)...")
     with rasterio.open(item.assets["B04"].href) as src:
         red = src.read(1, window=window).astype('float32') / 10000.0
-        
+
     print("       Reading NIR (B08, 10m)...")
     with rasterio.open(item.assets["B08"].href) as src:
         nir = src.read(1, window=window).astype('float32') / 10000.0
-        
-    print("       Reading SWIR1 (B11, 20m → resampled to 10m on the fly)...")
-    with rasterio.open(item.assets["B11"].href) as src:
-        swir1 = src.read(1, window=window, out_shape=blue.shape,
-                         resampling=rasterio.enums.Resampling.bilinear).astype('float32') / 10000.0
+
+    # IMPORTANT: B11 is 20m native -- compute its OWN window from the 20m transform.
+    # Reusing the 10m B02 window here would apply 10m pixel coordinates to a 20m grid,
+    # silently reading the wrong geographic area. Use out_shape to resample to 10m.
+    print("       Reading SWIR1 (B11, 20m -> resampled to 10m independently)...")
+    with rasterio.open(item.assets["B11"].href) as src_b11:
+        t_b11 = Transformer.from_crs("EPSG:4326", src_b11.crs, always_xy=True)
+        minx_b11, miny_b11 = t_b11.transform(BBOX[0], BBOX[1])
+        maxx_b11, maxy_b11 = t_b11.transform(BBOX[2], BBOX[3])
+        win_b11 = from_bounds(minx_b11, miny_b11, maxx_b11, maxy_b11, src_b11.transform)
+        swir1 = src_b11.read(
+            1, window=win_b11, out_shape=target_shape,
+            resampling=rasterio.enums.Resampling.bilinear
+        ).astype('float32') / 10000.0
 
     print("\n[INFO] Calculating all 7 Spectral Indices...")
     ndvi = calculate_ndvi(nir, red)
@@ -158,6 +169,16 @@ def process_indices():
         (ndsi, 'cool',    (-0.3, 0.8),  'NDSI — Snow & Ice Extent'),
         (ndgi, 'PuBuGn',  (-0.3, 0.5),  'NDGI — Glacier Green Ice'),
     ]
+
+    # Tier 3: print summary statistics for each index
+    print("\n--- INDEX SUMMARY STATISTICS ---")
+    for (data, _, _, title), name in zip(indices, ['NDVI','EVI','SAVI','BSI','NDWI','NDSI','NDGI']):
+        valid = data[np.isfinite(data)]
+        if valid.size > 0:
+            print(f"  {name:6s}: mean={np.mean(valid):+.3f}  std={np.std(valid):.3f}"
+                  f"  min={np.min(valid):+.3f}  max={np.max(valid):+.3f}")
+    print("-" * 50)
+
     fig, axs = plt.subplots(2, 4, figsize=(22, 12))
     axs_flat = axs.flatten()
     for ax, (data, cmap, vrange, title) in zip(axs_flat, indices):
@@ -170,6 +191,7 @@ def process_indices():
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "spectral_indices_all.png")
     plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak
     print(f"       [SUCCESS] 7-panel chart saved: {plot_path}")
 
 def main():

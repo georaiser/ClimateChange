@@ -76,14 +76,21 @@ def process_retreat():
         minx, miny = transformer2023.transform(BBOX[0], BBOX[1])
         maxx, maxy = transformer2023.transform(BBOX[2], BBOX[3])
         win2023 = from_bounds(minx, miny, maxx, maxy, src2023_green.transform)
-        
+        pixel_res_m = abs(src2023_green.res[0]) * 111_000.0   # approximate m/pixel at study lat
+
         # --- CRITICAL: Apply Landsat Collection 2 Level-2 Scale Factor ---
-        # Landsat C2-L2 Surface Reflectance is stored as scaled integers.
-        # Formula: SR = DN * 0.0000275 + (-0.2)
-        # WITHOUT this step, raw DNs (~7000-20000) produce NDSI values near 1.0
-        # for ALL pixels, making the glacier threshold meaningless.
+        # SR = DN * 0.0000275 + (-0.2)   — without this, raw DNs (~7000-20000)
+        # make NDSI values near 1.0 for ALL pixels, breaking the 0.4 threshold.
+        green_2023 = src2023_green.read(1, window=win2023).astype('float32')
+        target_shape = green_2023.shape
+        profile = src2023_green.profile.copy()
+        profile.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(win2023.height)), width=int(round(win2023.width)),
+            transform=rasterio.windows.transform(win2023, src2023_green.transform)
+        )
         green_2023 = green_2023 * 0.0000275 - 0.2
-        green_2023 = np.clip(green_2023, 0, 1)  # Clamp to valid [0,1] reflectance range
+        green_2023 = np.clip(green_2023, 0, 1)
         
     with rasterio.open(item_2023.assets["swir16"].href) as src:
         swir_2023 = src.read(1, window=win2023).astype('float32')
@@ -123,8 +130,24 @@ def process_retreat():
     print("\n[INFO] Exporting Geocoded TIFF for ArcGIS/ENVI...")
     out_tif = os.path.join(OUT_DIR, "glacier_retreat_2003_2023.tif")
     with rasterio.open(out_tif, 'w', **profile) as dst:
-        dst.write(retreat_map, 1)
+        dst.write(np.nan_to_num(retreat_map, nan=-9999).astype('float32'), 1)
     print(f"       [SUCCESS] Exported TIFF: {out_tif}")
+
+    # --- Tier 3: Quantitative Area Change Report ---
+    # pixel area in km² — pixel_res_m was captured from src2023_green.res above
+    pixel_area_km2 = (pixel_res_m / 1000) ** 2
+    ice_lost_px    = np.sum(retreat_map == 1)
+    ice_gained_px  = np.sum(retreat_map == -1)
+    ice_stable_px  = np.sum(retreat_map == 0)
+
+    print("\n--- GLACIAL CHANGE REPORT (2003 – 2023) ---")
+    print(f"  Ice Lost (Melted) : {ice_lost_px * pixel_area_km2:7.2f} km²  ({ice_lost_px:,} pixels)")
+    print(f"  Ice Stable        : {ice_stable_px * pixel_area_km2:7.2f} km²  ({ice_stable_px:,} pixels)")
+    print(f"  Ice Gained        : {ice_gained_px * pixel_area_km2:7.2f} km²  ({ice_gained_px:,} pixels)")
+    net_change = (ice_gained_px - ice_lost_px) * pixel_area_km2
+    direction  = 'ADVANCE' if net_change > 0 else 'RETREAT'
+    print(f"  Net Change        : {abs(net_change):7.2f} km² ({direction})")
+    print("-" * 45)
 
     print("\n[INFO] Generating Multi-temporal Map...")
     fig, axs = plt.subplots(1, 3, figsize=(18, 6))
@@ -156,7 +179,8 @@ def process_retreat():
     
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "glacier_retreat_2003_2023.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak
     print(f"       [SUCCESS] Multi-temporal map saved to: {plot_path}")
 
 def main():

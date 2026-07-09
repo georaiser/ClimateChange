@@ -1,159 +1,84 @@
-# Chapter 8: Data Fusion & Cascade Effect Modeling
+# Chapter 8: Multi-Sensor Data Fusion & Risk Modeling
 
-## 🎯 Academic Objective
-
-The previous chapters each examined one physical property in isolation: climate, spectral signatures, topography, hydrology, radar. But Earth systems don't operate in isolation — they interact in **cascading chains**:
-
-$$\text{Temperature Rise} \rightarrow \text{Glacier Melt} \rightarrow \text{Runoff Increase} \rightarrow \text{Flood Risk} \rightarrow \text{Vegetation Shift}$$
-
-Modeling this chain requires **Multi-Sensor Data Fusion**: aligning vastly different satellite datasets into a single multidimensional data cube, then applying Machine Learning and **Convergent Evidence Analysis** to extract insights no single sensor can provide.
-
-By the end of this chapter you will be able to:
-- Align 4 satellite sensors (Optical + Radar + Thermal + DEM) onto a common spatial grid
-- Train a Random Forest classifier on multi-sensor training data
-- Compute three composite environmental insight scores (ESI, CVS, WSI)
-- Generate a Convergent Risk Map showing where ALL risk factors coincide simultaneously
+## Academic Objective
+Fuse data from 4 completely different sensors (Sentinel-2, Sentinel-1, CopDEM, MODIS)
+onto a single 10m spatial grid using rasterio.warp.reproject, then train a Random Forest
+classifier on the 4-band data cube for land cover classification.
 
 ---
 
-## 🛠️ Scripts & Modules
+## Scripts
 
-### `20_multisensor_data_fusion.py`
-Builds a 4-band multi-sensor Data Cube by reprojecting all layers to a common 10m Sentinel-2 grid.
+### 20_multisensor_data_fusion.py — 4-Sensor Data Cube
 
-**Data sources fused:**
-| Band | Sensor | Native Resolution | Property |
-|------|--------|-----------------|----------|
-| 1 | Sentinel-2 NIR (B08) | 10m | Vegetation / surface reflectance |
-| 2 | Sentinel-1 SAR VV | 10m | Surface roughness / water detection |
-| 3 | Copernicus DEM | 30m | Elevation (upsampled to 10m) |
-| 4 | MODIS LST | 1000m | Land Surface Temperature (downsampled) |
+Fuses 4 bands from different sensors onto a single 10m master grid (S2 NIR as base):
 
-> [!CAUTION]
-> **SAR dB Conversion Order — Mathematically Critical**
->
-> The log transform (linear → dB) must be applied **before** any resampling or reprojection. Applying log to bilinearly-interpolated linear values produces different results because $\log(\text{mean}) \neq \text{mean}(\log)$:
-> ```python
-> # ✅ CORRECT — apply log on raw linear values first
-> vv_linear = src.read(1)
-> vv_db = 10 * np.log10(np.where(vv_linear > 0, vv_linear, np.nan))
-> # THEN reproject vv_db to master grid
->
-> # ❌ WRONG — reprojecting linear values then taking log
-> vv_reprojected = reproject(vv_linear, ...)  # bilinear interpolation on linear
-> vv_db = 10 * np.log10(vv_reprojected)       # log of averaged linear values
-> ```
+| Band | Sensor | Native Res | Physical Layer |
+|---|---|---|---|
+| 1 | Sentinel-2 B08 | 10m | NIR reflectance |
+| 2 | Sentinel-1 RTC | 10m | SAR VV backscatter (dB) |
+| 3 | Copernicus DEM | 30m | Elevation (m) |
+| 4 | MODIS MOD11A1 | 1km | Land Surface Temperature (Celsius) |
 
-**Output:** `cascade_master_stack.tif` — a 4-band GeoTIFF with band descriptions. Load in ENVI for false-color composites (e.g., Red=Radar, Green=Optical, Blue=Thermal).
-
----
-
-### `21_cascade_risk_modeling.py`
-Trains a Random Forest classifier on the 4-band data cube to produce a land cover map.
-
-**Synthetic training data generation (percentile thresholds):**
-| Class | NIR | SAR (dB) | Elevation | Label |
-|-------|-----|----------|-----------|-------|
-| Water | Low (<30th pct) | Very low (<-18dB) | Low | 1 |
-| Glacier/Ice | Medium | Low-medium | High (>75th pct) | 2 |
-| Land/Vegetation | High (>70th pct) | Medium-high | Medium | 3 |
+All bands reprojected to S2 UTM grid via rasterio.warp.reproject (bilinear).
 
 > [!WARNING]
-> **Data Leakage — Academic Teaching Notice**
-> The training labels are derived from the same data being classified. In a real research context, this constitutes **circular reasoning** — the classifier learns rules that were already applied to the data. This is a pedagogical device to demonstrate the Random Forest workflow. For real projects, use independent field survey data or manually digitized training polygons.
+> nodata must be -9999, NOT np.nan. Writing np.nan to integer GDAL rasters
+> produces silent corruption. The _to_nodata() helper cleans NaN/Inf before writing.
 
-**Feature Importance — console bar chart:**
-```
-S2 NIR (Optical)     : ████████████████████ 0.412
-S1 SAR dB (Radar)    : ██████████████       0.287
-DEM Elevation (m)    : ██████████           0.201
-MODIS LST (°C)       : ████                 0.100
-```
-This answers: *which sensor contributed the most discriminative information for land cover classification?*
+**Improvements applied:**
+- nodata=-9999 with _to_nodata() cleanup helper
+- MODIS STAC guard: fills thermal band with NoData if no items found
+- window dims int(round()) for correct TIFF profile
+- Enhanced band descriptions in GeoTIFF metadata (QGIS/ArcGIS readable)
+- NEW Tier 3: fusion statistics summary (mean/std/min/max per band)
 
-**Land Cover Summary table** (printed after classification):
-```
-Water             :  12,384 px ( 8.3%)
-Glacier/Ice       :  23,901 px (16.1%)
-Land/Vegetation   : 112,744 px (75.6%)
-```
+Run: `python 20_multisensor_data_fusion.py`
+
+Outputs: cascade_master_stack.tif (4-band, ready for ML)
 
 ---
 
-### `22_combined_insights_engine.py` ⭐ NEW
+### 21_cascade_risk_modeling.py — Random Forest Land Cover Classifier
 
-The most advanced script in the curriculum. Fuses **5 sensor layers** simultaneously and computes three composite environmental insight scores using **Convergent Evidence Analysis**.
+Trains a Random Forest classifier on the 4-band fusion stack to classify terrain:
+Glacier / Water / Vegetation / Rock / Bare Soil
 
-#### The Three Composite Insight Scores
+Outputs probability maps showing model confidence per class.
 
-**① ESI — Ecological Stress Index**
-$$ESI = 0.5 \cdot (1 - \hat{NDVI}) + 0.3 \cdot \hat{LST} + 0.2 \cdot \hat{Slope}$$
+Run: `python 21_cascade_risk_modeling.py`
 
-Where $\hat{x}$ denotes normalization to [0,1] using the 2nd/98th percentile. High ESI = degraded, heat-stressed, erosion-prone ecosystem.
-
-**② CVS — Cryosphere Vulnerability Score**
-$$CVS = 0.4 \cdot \hat{LST} + 0.4 \cdot (1 - \hat{NDSI}) + 0.2 \cdot (1 - \hat{SAR})$$
-
-Computed **only over pixels where NDSI > 0.2** (actual glaciated surfaces). High CVS = warm + snow-poor + radar-smooth = actively melting ice.
-
-**③ WSI — Water Stress Compound Index**
-$$WSI = 0.4 \cdot \hat{NDWI} + 0.4 \cdot \hat{NDSI} + 0.2 \cdot (1 - \hat{LST})$$
-
-High WSI = abundant water (surface water + upstream snow + cool temperatures reducing evaporation).
-
-#### Convergent Risk Map
-A pixel-level count of how many risk factors are simultaneously active:
-- ESI > 0.6 (ecological stress zone)
-- CVS > 0.6 (glacial melt zone)
-- WSI < 0.3 (water-scarce zone)
-
-**Pixels where all 3 factors coincide** = the most critical zones for environmental intervention.
-
-#### 12-Panel Dark-Mode Dashboard
-| Row | Panels |
-|-----|--------|
-| Row 1 | ① DEM, ② Slope, ③ SAR backscatter, ④ MODIS LST |
-| Row 2 | ⑤ NDVI, ⑥ NDWI, ⑦ NDSI, ⑧ ESI |
-| Row 3 | ⑨ CVS, ⑩ WSI, ⑪ Convergent Risk Map, ⑫ Elevation-NDVI Profile |
-
-> [!NOTE]
-> **Shape Harmonization:** Slight pixel-count differences between layers (due to rasterio float-precision windows) are automatically corrected using `scipy.ndimage.zoom` before computing composite scores. This ensures all arrays are exactly `(target_h, target_w)`.
+Outputs: risk_probability_map.tif, risk_classification.png
 
 ---
 
-## 🚀 How to Run
+### 22_combined_insights_engine.py — Multi-Sensor Convergence Analysis
 
-### Install Dependencies
+Combines optical, SAR, DEM, and climate signals to compute:
+- ESI (Environmental Stress Index)
+- CVS (Cascade Vulnerability Score)
+- WSI (Water Stress Index)
+
+Produces a final convergent evidence map showing areas where multiple sensors
+simultaneously indicate high environmental stress.
+
+Run: `python 22_combined_insights_engine.py`
+
+---
+
+## Key Concepts
+
+| Concept | Explanation |
+|---|---|
+| Data Fusion | Aligning sensors at different resolutions onto one common grid |
+| rasterio.warp.reproject | Handles CRS transformation + resampling in one step |
+| nodata=-9999 vs np.nan | GDAL reads nodata from profile; np.nan is silently mishandled |
+| Band descriptions | set_band_description() makes TIFFs self-documenting in GIS tools |
+| Fusion statistics | Validate each band is non-degenerate before passing to ML |
+| Random Forest | Pixel vector [NIR, SAR, DEM, LST] -> land cover class probability |
+
+## Installation
+
 ```bash
-mamba activate geocascade_env
-mamba install -n geocascade_env -c conda-forge \
-    pystac-client planetary-computer rasterio geopandas \
-    numpy matplotlib scikit-learn rasterstats scipy -y
+mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio numpy matplotlib pyproj scikit-learn -y
 ```
-
-### Execute Scripts
-```bash
-# Step 1: Build 4-band multi-sensor data cube
-python 20_multisensor_data_fusion.py
-
-# Step 2: Random Forest land cover classification
-python 21_cascade_risk_modeling.py
-
-# Step 3: Full convergent evidence analysis (all 5 sensors → 3 insight scores)
-python 22_combined_insights_engine.py
-```
-
-**Script 22 outputs:**
-- `data/combined_insights/combined_insights_dashboard.png` — 12-panel dark-mode dashboard
-- `data/combined_insights/combined_insights_report.md` — statistical summary with key insights
-
----
-
-## 🗺️ GIS Interoperability
-
-**ENVI:** Load `cascade_master_stack.tif` (4-band) → assign **Red=SAR, Green=NIR, Blue=Thermal** for a false-color composite that simultaneously shows ice (blue-cold), vegetation (green), and radar-rough terrain (red).
-
-**ArcGIS Pro:** Use the **Image Analyst → Classification Wizard** to run SVM or RF classification directly on `cascade_master_stack.tif` via the GUI — compare against our Python Random Forest output.
-
-> [!TIP]
-> The three composite scores (ESI, CVS, WSI) from `22_combined_insights_engine.py` can be used as direct inputs to an Environmental Impact Assessment (EIA) report. High ESI zones require ecological restoration planning; high CVS zones require glacial melt water supply forecasting; low WSI zones require irrigation or water conservation planning.

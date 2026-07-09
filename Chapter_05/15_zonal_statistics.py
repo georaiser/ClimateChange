@@ -66,7 +66,10 @@ def fetch_data():
     
     # 1. Fetch DEM
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
-    item_dem = list(search_dem.items())[0]
+    items_dem = list(search_dem.items())
+    if not items_dem:
+        raise RuntimeError("No DEM found for BBOX. Check coordinates or Planetary Computer access.")
+    item_dem = items_dem[0]
     
     # We will save the DEM and NDVI to local temporary TIFFs so rasterstats can read them efficiently
     dem_path = os.path.join(OUT_DIR, "temp_dem.tif")
@@ -84,14 +87,24 @@ def fetch_data():
         dem = np.where(dem < 0, np.nan, dem)
         
         profile_dem = src.profile
-        profile_dem.update(dtype=rasterio.float32, count=1, nodata=np.nan, height=window.height, width=window.width, transform=transform)
-        
+        profile_dem.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
+            transform=transform
+        )
+
         with rasterio.open(dem_path, 'w', **profile_dem) as dst:
-            dst.write(dem, 1)
+            dst.write(np.nan_to_num(dem, nan=-9999), 1)
 
     print("       Downloading Sentinel-2 NDVI...")
-    search_s2 = catalog.search(collections=["sentinel-2-l2a"], bbox=BBOX, datetime="2023-01-01/2023-02-28", query={"eo:cloud_cover": {"lt": 5}})
-    item_s2 = list(search_s2.items())[0]
+    search_s2 = catalog.search(
+        collections=["sentinel-2-l2a"], bbox=BBOX,
+        datetime="2023-01-01/2023-02-28", query={"eo:cloud_cover": {"lt": 5}}
+    )
+    items_s2 = list(search_s2.items())
+    if not items_s2:
+        raise RuntimeError("No Sentinel-2 found. Relax cloud cover filter or adjust date range.")
+    item_s2 = sorted(items_s2, key=lambda i: i.properties["eo:cloud_cover"])[0]
     
     with rasterio.open(item_s2.assets["B04"].href) as src_red, rasterio.open(item_s2.assets["B08"].href) as src_nir:
         # Align to DEM
@@ -120,21 +133,24 @@ def run_zonal_statistics(gdf, dem_path, ndvi_path):
         
     gdf_proj = gdf.to_crs(raster_crs)
     
-    # Calculate stats
-    stats_dem = zonal_stats(gdf_proj, dem_path, stats="mean max min", nodata=np.nan)
-    stats_ndvi = zonal_stats(gdf_proj, ndvi_path, stats="mean", nodata=np.nan)
+    # Calculate stats — include std/min/max for richer analysis (Tier 3 improvement)
+    stats_dem  = zonal_stats(gdf_proj, dem_path,  stats="mean max min std", nodata=-9999)
+    stats_ndvi = zonal_stats(gdf_proj, ndvi_path, stats="mean min max std", nodata=-9999)
     
     print("\n--- ZONAL STATISTICS REPORT ---")
     for i, row in gdf_proj.iterrows():
         zone_name = row['Zone']
-        mean_elev = stats_dem[i]['mean']
-        max_elev = stats_dem[i]['max']
-        mean_ndvi = stats_ndvi[i]['mean']
-        
+        # Guard against None (zone entirely covered by NoData)
+        def _s(v, fmt='.1f'): return format(v, fmt) if v is not None else 'N/A'
         print(f"Zone: {zone_name}")
-        print(f"  - Mean Elevation: {mean_elev:.1f} m (Peak: {max_elev:.1f} m)")
-        print(f"  - Mean NDVI:      {mean_ndvi:.3f}")
-        print("-" * 30)
+        print(f"  - Elevation : mean={_s(stats_dem[i].get('mean'))} m  "
+              f"max={_s(stats_dem[i].get('max'))} m  "
+              f"std=±{_s(stats_dem[i].get('std'))} m")
+        print(f"  - NDVI      : mean={_s(stats_ndvi[i].get('mean'), '.3f')}  "
+              f"min={_s(stats_ndvi[i].get('min'), '.3f')}  "
+              f"max={_s(stats_ndvi[i].get('max'), '.3f')}  "
+              f"std=±{_s(stats_ndvi[i].get('std'), '.3f')}")
+        print("-" * 45)
 
     print("\n[INFO] Plotting Management Zones...")
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -149,7 +165,8 @@ def run_zonal_statistics(gdf, dem_path, ndvi_path):
                      horizontalalignment='center', color='red', weight='bold', fontsize=12)
                      
     plot_path = os.path.join(OUT_DIR, "zonal_statistics.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak
     print(f"       [SUCCESS] Plot saved to: {plot_path}")
 
 def main():

@@ -47,7 +47,10 @@ def process_drainage_density():
     print("\n[INFO] Fetching DEM from Planetary Computer...")
     catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
-    item_dem = list(search_dem.items())[0]
+    items_dem = list(search_dem.items())
+    if not items_dem:
+        raise RuntimeError("No DEM tiles found for BBOX. Check coordinates or Planetary Computer access.")
+    item_dem = items_dem[0]
     
     temp_dem_path = os.path.join(OUT_DIR, "temp_dem.tif")
     
@@ -60,11 +63,16 @@ def process_drainage_density():
         
         dem = src.read(1, window=window).astype('float32')
         dem = np.where(dem < 0, np.nan, dem)
+        raster_crs = src.crs   # CRITICAL: capture CRS inside the with-block
         profile = src.profile
-        profile.update(dtype=rasterio.float32, count=1, nodata=np.nan, height=window.height, width=window.width, transform=transform)
-        
+        profile.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
+            transform=transform
+        )
+
         with rasterio.open(temp_dem_path, 'w', **profile) as dst:
-            dst.write(dem, 1)
+            dst.write(np.nan_to_num(dem, nan=-9999).astype('float32'), 1)
 
     print("\n[INFO] Running ArcHydro Routing Simulation (pysheds)...")
     grid = Grid.from_raster(temp_dem_path)
@@ -95,7 +103,8 @@ def process_drainage_density():
         geom = shape(feature['geometry'])
         geom_list.append(geom)
         
-    gdf_rivers = gpd.GeoDataFrame({'geometry': geom_list}, crs=src.crs)
+    gdf_rivers = gpd.GeoDataFrame({'geometry': geom_list}, crs=raster_crs)
+    # Note: raster_crs was captured inside the rasterio.open() block above.
     
     shp_path = os.path.join(OUT_DIR, "river_network.shp")
     gdf_rivers.to_file(shp_path)
@@ -133,7 +142,8 @@ def process_drainage_density():
     fig.colorbar(im, ax=ax, label="Elevation (m)")
     
     plot_path = os.path.join(OUT_DIR, "drainage_density_map.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Plot saved to: {plot_path}")
 
 def main():

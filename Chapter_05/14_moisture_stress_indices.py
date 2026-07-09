@@ -67,8 +67,8 @@ def process_moisture():
         
         profile = src_nir.profile
         profile.update(
-            dtype=rasterio.float32, count=1, nodata=np.nan,
-            height=window.height, width=window.width,
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
             transform=transform
         )
         
@@ -76,8 +76,18 @@ def process_moisture():
         nir = src_nir.read(1, window=window).astype('float32') / 10000.0
 
     print("       Reading SWIR1 (B11) and resampling to 10m...")
+    # NOTE: B11 (SWIR) is 20m native resolution. We MUST pass window= and out_shape=
+    # to resample it to the 10m NIR grid. The window here uses the 20m transform,
+    # but the out_shape forces the output to match nir.shape (10m pixels).
     with rasterio.open(item.assets["B11"].href) as src_swir:
-        swir1 = src_swir.read(1, window=window, out_shape=nir.shape, resampling=rasterio.enums.Resampling.bilinear).astype('float32') / 10000.0
+        transformer_swir = Transformer.from_crs("EPSG:4326", src_swir.crs, always_xy=True)
+        sminx, sminy = transformer_swir.transform(BBOX[0], BBOX[1])
+        smaxx, smaxy = transformer_swir.transform(BBOX[2], BBOX[3])
+        win_swir = from_bounds(sminx, sminy, smaxx, smaxy, src_swir.transform)
+        swir1 = src_swir.read(
+            1, window=win_swir, out_shape=nir.shape,
+            resampling=rasterio.enums.Resampling.bilinear
+        ).astype('float32') / 10000.0
 
     print("\n[INFO] Calculating Moisture Indices...")
     ndmi = calculate_ndmi(nir, swir1)
@@ -112,7 +122,8 @@ def process_moisture():
     
     plt.tight_layout()
     plot_path = os.path.join(OUT_DIR, "moisture_stress_indices.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak in multi-script pipelines
     print(f"       [SUCCESS] Plot saved to: {plot_path}")
 
 def main():

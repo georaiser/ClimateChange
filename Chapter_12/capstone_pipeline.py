@@ -47,18 +47,24 @@ def parse_args():
 def fetch_infrastructure(bbox):
     print("\n[INFO] Fetching Real-World Infrastructure (Roads) from OpenStreetMap...")
     import osmnx as ox
+    # CRITICAL: graph_from_bbox uses (north, south, east, west) order — NOT (min_lon, min_lat, max_lon, max_lat).
+    # Passing bbox positionally would route bbox[0]=-73.30 as 'north' latitude — silently wrong location.
     try:
-        graph = ox.graph_from_bbox(bbox=(bbox[0], bbox[1], bbox[2], bbox[3]), network_type='all')
-    except TypeError:
-        graph = ox.graph_from_bbox(bbox[3], bbox[1], bbox[2], bbox[0], network_type='all')
-        
+        graph = ox.graph_from_bbox(
+            north=bbox[3], south=bbox[1],
+            east=bbox[2], west=bbox[0],
+            network_type='all'
+        )
+    except Exception as e:
+        raise RuntimeError(f"OSMnx download failed: {e}. Check BBOX coordinates and internet access.")
+
     _, edges = ox.graph_to_gdfs(graph)
-    
+
     roads_shp = os.path.join(OUT_DIR, "infrastructure_roads.shp")
     for col in edges.columns:
         if edges[col].apply(lambda x: isinstance(x, (list, tuple))).any():
             edges[col] = edges[col].astype(str)
-            
+
     edges.to_file(roads_shp)
     print(f"       [SUCCESS] Downloaded {len(edges)} road segments.")
     return edges
@@ -73,7 +79,10 @@ def fetch_and_fuse_rasters(bbox, date_range):
     # 1. Base Grid (DEM)
     print("       Fetching Copernicus DEM...")
     search_dem = catalog.search(collections=["cop-dem-glo-30"], bbox=bbox)
-    item_dem = list(search_dem.items())[0]
+    items_dem = list(search_dem.items())
+    if not items_dem:
+        raise RuntimeError("No DEM found for BBOX. Check coordinates or Planetary Computer access.")
+    item_dem = items_dem[0]
     
     with rasterio.open(item_dem.assets["data"].href) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
@@ -86,8 +95,11 @@ def fetch_and_fuse_rasters(bbox, date_range):
         dem = np.where(dem < 0, np.nan, dem)
         
         master_profile = src.profile.copy()
-        master_profile.update(dtype=rasterio.float32, count=1, nodata=np.nan, 
-                              height=int(window.height), width=int(window.width), transform=transform)
+        master_profile.update(
+            dtype=rasterio.float32, count=1, nodata=-9999,
+            height=int(round(window.height)), width=int(round(window.width)),
+            transform=transform
+        )
         
     # Helper to resample other layers to DEM grid
     def resample_to_master(href, native_process_func=None):
@@ -148,12 +160,15 @@ def export_and_analyze(roads_gdf, dem, ndvi, sar_db, profile):
         with rasterio.open(path, 'w', **profile) as dst:
             dst.write(arr, 1)
             
-    # Buffer Vectors
-    roads_metric = roads_gdf.to_crs("EPSG:3857")
+    # CRITICAL: Use a local UTM projection for buffering, NOT EPSG:3857 (Web Mercator).
+    # At latitude ~51°S, Web Mercator introduces ~40% distance distortion, making a
+    # 1000m buffer actually ~700m on the ground.
+    # EPSG:32719 = UTM Zone 19S (Torres del Paine, ~72°W, 51°S) — accurate to <0.1%.
+    roads_metric = roads_gdf.to_crs("EPSG:32719")
     road_buffers = roads_metric.copy()
-    road_buffers['geometry'] = road_buffers.geometry.buffer(1000)
+    road_buffers['geometry'] = road_buffers.geometry.buffer(1000)   # exact 1000m
     impact_zone_metric = road_buffers.dissolve()
-    
+
     impact_zone = impact_zone_metric.to_crs(profile['crs'])
     impact_zone.to_file(os.path.join(OUT_DIR, "impact_zone.shp"))
     
@@ -197,25 +212,33 @@ def generate_outputs(bbox, dem, ndvi, sar, buffers, stats_dem, stats_ndvi, stats
         
     plot_path = os.path.join(OUT_DIR, "capstone_multi_panel.png")
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)  # prevent memory leak
     
     # 2. Markdown Report
     report_path = os.path.join(BASE_DIR, "site_analysis_report.md")
+    def _fmt(val, decimals=3, fallback='N/A'):
+        """Format a zonal_stats value safely, guarding against None (all-NoData zone)."""
+        return f'{val:.{decimals}f}' if val is not None else fallback
+
     content = f"""# Capstone Site Analysis Report
-    
+
 ## 📍 Territory Overview
 **Coordinates (BBOX):** `{bbox}`
 
-This report was generated dynamically via the **GeoCascade CLI Pipeline**. It synthesizes data across Optical, Radar, and Topographical satellite constellations, overlaid with OpenStreetMap road networks.
+This report was generated dynamically via the **GeoCascade CLI Pipeline**. It synthesizes data
+across Optical, Radar, and Topographical satellite constellations, overlaid with OpenStreetMap
+road networks.
 
 ---
 
 ## 📊 Analytical Results: Human Impact Zone (1km Buffer)
-We buffered all local roads by 1000 meters to analyze the environmental conditions directly exposed to human activity.
+We buffered all local roads by 1000 meters (using UTM Zone 19S for accurate distance)
+to analyze the environmental conditions directly exposed to human activity.
 
-*   **Average Vegetation Health (NDVI):** `{stats_ndvi['mean']:.3f}` (Max: `{stats_ndvi['max']:.3f}`)
-*   **Terrain Profile (Elevation):** `{stats_dem['mean']:.1f}m` average, peaking at `{stats_dem['max']:.1f}m`.
-*   **Radar Backscatter (SAR VV):** `{stats_sar['mean']:.1f} dB`
+*   **Average Vegetation Health (NDVI):** `{_fmt(stats_ndvi.get('mean'))}` (Max: `{_fmt(stats_ndvi.get('max'))}`)
+*   **Terrain Profile (Elevation):** `{_fmt(stats_dem.get('mean'), 1)}m` average, peaking at `{_fmt(stats_dem.get('max'), 1)}m`.
+*   **Radar Backscatter (SAR VV):** `{_fmt(stats_sar.get('mean'), 1)} dB`
     *   *Interpretation:* High dB indicates rough terrain or urban structures. Very low dB (< -18) indicates standing water or smooth ice near the roads.
 
 ---
@@ -225,7 +248,7 @@ The following files are ready for ArcGIS Pro / ENVI in the `data/processed/` dir
 1.  `infrastructure_roads.shp` / `impact_zone.shp`
 2.  `capstone_dem.tif`, `capstone_ndvi.tif`, `capstone_sar.tif`
 
-*Report auto-generated by the Agentic Python Pipeline.*
+*Report auto-generated by the GeoCascade Agentic Python Pipeline.*
 """
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(content)
