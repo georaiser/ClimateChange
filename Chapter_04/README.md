@@ -51,3 +51,14 @@ Perform a Weighted Overlay analysis to map climate risk:
 python 13_climate_vulnerability_index.py
 ```
 *(Check `data/processed/climate_vulnerability_index.png` for the final index).*
+
+---
+
+## 🗺️ GIS Interoperability (ArcGIS Pro & ENVI)
+A core academic requirement of this curriculum is **Hybrid Dual-Track Interoperability**. Every Python script in this chapter has been engineered to automatically export **Geocoded TIFF (.tif)** and **Shapefile (.shp)** outputs into the \data/processed/\ directory.
+
+Instead of just looking at matplotlib PNG graphs, students are encouraged to:
+1. Run the automated Python pipeline.
+2. Open **ArcGIS Pro** or **ENVI**.
+3. Drag-and-drop the generated \.tif\ and \.shp\ files directly into the GUI.
+4. Verify that the Python outputs align perfectly with the GUI software basemaps.

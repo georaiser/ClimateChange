@@ -4,7 +4,30 @@ channels:
   - defaults
 dependencies:
   - python=3.12
-  # NOTE: We are using a modular installation approach.
-  # Heavy libraries (GDAL, PyTorch, LangGraph) will be installed 
-  # chapter-by-chapter rather than all at once. Check the README 
-  # inside each Chapter folder for specific installation commands.
+  
+  # Core Data Science & Geospatial Processing (Chapters 1 - 6)
+  - numpy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - requests
+
+  # Cloud-Native STAC & GIS 
+  - pystac-client
+  - planetary-computer
+  - rasterio
+  - geopandas
+  - shapely
+  - pyproj
+
+  # Advanced Hydrology & Zonal Statistics
+  - pysheds
+  - rasterstats
+
+  # Real-World Vector Sourcing (Chapter 12 Capstone)
+  - osmnx
+  - networkx
+
+  # NOTE: Advanced AI and Database dependencies (e.g., PyTorch, PostGIS, LangGraph) 
+  # for Chapters 7-11 are intentionally excluded here to keep this environment lightweight. 
+  # Please refer to the specific Chapter READMEs for their installation instructions.

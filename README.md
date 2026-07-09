@@ -53,19 +53,37 @@ micromamba install -n geocascade_env pytorch torchvision torchaudio pytorch-cuda
 *Note: You will also need free academic accounts for the Copernicus Data Space Ecosystem (CDSE) and NASA Earthdata to access the STAC APIs.*
 
 ## 📂 Project Structure
-The project is divided into two phases: **Core Physical Sciences** (Ch 1-6) and **Advanced Geo-AI Architectures** (Ch 7-11).
+The project has evolved into three distinct phases, blending physical earth sciences with advanced software engineering:
 
-*   `Chapter_01/` - Climatic Variables & Image Processing
-*   `Chapter_02/` - Glacial Retreat, SAR Dynamics, and AI
-*   `Chapter_03/` - Hydrology and Watershed Modeling
-*   `Chapter_04/` - Vulnerability and Ecosystem Impacts
-*   `Chapter_05/` - Cartography and Management Plans
-*   `Chapter_06/` - The Linear Unified Pipeline
-*   `Chapter_07/` - Agentic Orchestration (LangGraph)
-*   `Chapter_08/` - The Cascade Effect Modeling
-*   `Chapter_09/` - Multi-Task PyTorch Model
-*   `Chapter_10/` - Spatial Database Integration (PostGIS)
-*   `Chapter_11/` - Interactive Dashboard (Full-Stack GIS)
+**Phase 1: Core Physical Sciences**
+*   `Chapter_01/` - Climatic Variables & STAC Acquisition
+*   `Chapter_02/` - Spectral Signature Analysis
+*   `Chapter_03/` - Topography & Glacial Retreat
+*   `Chapter_04/` - Ecological Niche & Climate Vulnerability
+*   `Chapter_05/` - Zonal Statistics & Moisture Stress
+*   `Chapter_06/` - Advanced Hydrometeorology
+*   `Chapter_07/` - Radar & Multi-Sensor Review (SAR)
+
+**Phase 2: Advanced Modeling & Geo-AI**
+*   `Chapter_08/` - Data Fusion & The Cascade Effect (Machine Learning)
+*   `Chapter_09/` - Multi-Task Deep Learning (PyTorch)
+*   `Chapter_10/` - Agentic Orchestration (LangGraph)
+*   `Chapter_11/` - Enterprise Spatial Databases (PostGIS)
+
+**Phase 3: The Capstones**
+*   `Chapter_12/` - Basic Capstone (Automated Site Analysis)
+*   `Chapter_13_14/` - Advanced Capstone (FastAPI Microservice)
 
 ## 🚀 Getting Started
 To replicate this project, please navigate to the respective Chapter folder and read its specific `README.md` file, starting with `Chapter_01`. Each chapter contains its own mathematical concepts, action steps, and required data inputs.
+
+---
+
+## 🗺️ GIS Interoperability (ArcGIS Pro & ENVI)
+A core academic requirement of this curriculum is **Hybrid Dual-Track Interoperability**. Every Python script in this chapter has been engineered to automatically export **Geocoded TIFF (.tif)** and **Shapefile (.shp)** outputs into the \data/processed/\ directory.
+
+Instead of just looking at matplotlib PNG graphs, students are encouraged to:
+1. Run the automated Python pipeline.
+2. Open **ArcGIS Pro** or **ENVI**.
+3. Drag-and-drop the generated \.tif\ and \.shp\ files directly into the GUI.
+4. Verify that the Python outputs align perfectly with the GUI software basemaps.
