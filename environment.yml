@@ -1,33 +1,97 @@
 name: geocascade_env
+
+# GeoCascade Environmental Analysis Pipeline
+# Full dependency specification — covers all 14 chapters and 36 scripts.
+#
+# Create:  mamba env create -f environment.yml
+# Update:  mamba env update -f environment.yml --prune
+# Activate: conda activate geocascade_env
+#
+# CUDA note: PyTorch is pinned to CPU wheels (cpuonly). For GPU support, change
+#   the index-url in the pip section to:
+#   https://download.pytorch.org/whl/cu121   (CUDA 12.1)
+#   https://download.pytorch.org/whl/cu118   (CUDA 11.8)
+#
+# Channel note: 'defaults' (Anaconda) is intentionally excluded to avoid
+#   commercial licensing restrictions. All packages resolve from conda-forge
+#   and pytorch channels (both fully open-source/free).
+#
+# PostGIS note: psycopg2, sqlalchemy, geoalchemy2, fastapi, uvicorn are
+#   listed under pip because the conda-forge builds conflict on some platforms.
+#   They are optional — Chapter 11 runs without them (GeoJSON fallback mode).
+
 channels:
-  - conda-forge
-  - defaults
+  - conda-forge          # Primary channel for all geospatial packages
+  # 'pytorch' channel intentionally omitted: PyTorch is installed via pip
+  # (official wheel index) to avoid conda channel priority conflicts.
+  # 'defaults' (Anaconda) intentionally omitted — requires commercial license.
+
 dependencies:
-  - python=3.12
-  
-  # Core Data Science & Geospatial Processing (Chapters 1 - 6)
-  - numpy
-  - pandas
-  - matplotlib
-  - scikit-learn
-  - requests
+  # ── Python ────────────────────────────────────────────────────────────────
+  - python=3.11          # 3.11 has broader geospatial wheel support than 3.12
 
-  # Cloud-Native STAC & GIS 
-  - pystac-client
-  - planetary-computer
-  - rasterio
-  - geopandas
-  - shapely
-  - pyproj
+  # ── Core Scientific Stack ─────────────────────────────────────────────────
+  - numpy>=1.26          # Array processing (all chapters)
+  - pandas>=2.1          # Tabular data, ERA5 CSV handling (Ch01, Ch10)
+  - scipy>=1.11          # Signal processing, nnls, correlate2d (Ch13, Ch14)
+  - matplotlib>=3.8      # All visualisation (all chapters)
+  - scikit-learn>=1.4    # RF classifier, PCA, metrics (Ch04, Ch08, Ch09)
+  - scikit-image         # Image processing utilities (Ch13)
 
-  # Advanced Hydrology & Zonal Statistics
-  - pysheds
-  - rasterstats
+  # ── Geospatial / STAC ─────────────────────────────────────────────────────
+  - rasterio>=1.3        # GeoTIFF read/write, reprojection (all chapters)
+  - geopandas>=0.14      # Vector GIS, GeoDataFrame (Ch05, Ch11, Ch12)
+  - shapely>=2.0         # Geometry operations (Ch06, Ch11, Ch12)
+  - pyproj>=3.6          # CRS transformations (all chapters)
+  - pystac-client>=0.7   # STAC search API (Ch01, Ch07, Ch08)
+  - planetary-computer>=0.5  # Microsoft PC STAC signing (Ch01-Ch08)
+  - fiona                # Vector I/O backend for geopandas
 
-  # Real-World Vector Sourcing (Chapter 12 Capstone)
-  - osmnx
-  - networkx
+  # ── Hydrology ─────────────────────────────────────────────────────────────
+  - pysheds>=0.4         # D8 flow routing, watershed delineation (Ch03, Ch06)
+  - rasterstats>=0.19    # Zonal statistics (Ch05, Ch12)
 
-  # NOTE: Advanced AI and Database dependencies (e.g., PyTorch, PostGIS, LangGraph) 
-  # for Chapters 7-11 are intentionally excluded here to keep this environment lightweight. 
-  # Please refer to the specific Chapter READMEs for their installation instructions.
+  # ── OpenStreetMap / Routing ───────────────────────────────────────────────
+  - osmnx>=1.8           # OSM street network download (Ch12 Capstone)
+  - networkx>=3.2        # Graph algorithms (Ch12 dependency)
+
+  # ── Climate / Real Data ───────────────────────────────────────────────────
+  - requests>=2.31       # HTTP client — Open-Meteo ERA5, CHIRPS (Ch01)
+  - tqdm                 # Progress bars for bulk downloads (Ch01)
+  - netCDF4              # Read NetCDF (ERA5 full bulk, Copernicus CDS)
+  - xarray               # Labelled arrays — NetCDF handling (Ch01 optional)
+  - pymannkendall        # Mann-Kendall trend test (Ch01 03b_era5_trend_analysis)
+  - statsmodels          # Theil-Sen slope, ACF/PACF (Ch01)
+
+  # ── Image / Signal Processing ─────────────────────────────────────────────
+  # Chapter 13: InSAR offset tracking (scipy.signal.correlate2d)
+  # Chapter 14: Hyperspectral unmixing (scipy.optimize.nnls)
+  # Both covered by scipy above
+
+  # ── Utilities ─────────────────────────────────────────────────────────────
+  - python-dateutil      # Date parsing (all chapters)
+  - pytz                 # Timezone handling
+  - joblib               # Parallel processing (scikit-learn backend)
+  - tifffile             # Fast TIFF I/O
+  - pillow               # Image format conversion
+
+  # ── Optional: PostGIS + FastAPI (Chapter 11) + PyTorch CPU (Chapter 9) ─────
+  # pip is used for:
+  #   1. PyTorch — avoids conda channel priority conflicts with conda-forge
+  #   2. PostGIS stack — avoids conda-forge solver conflicts
+  # Chapter 11 runs without PostGIS using GeoJSON fallback mode.
+  - pip
+  - pip:
+    # ——— PyTorch CPU (Chapter 9: CNN land cover classification) ———————————
+    - torch --index-url https://download.pytorch.org/whl/cpu
+    - torchvision --index-url https://download.pytorch.org/whl/cpu
+    # GPU ALTERNATIVE: replace the 2 lines above with:
+    # - torch --index-url https://download.pytorch.org/whl/cu121
+    # - torchvision --index-url https://download.pytorch.org/whl/cu121
+    #
+    # ——— PostGIS + FastAPI (Chapter 11) ———————————————————————————
+    - psycopg2-binary    # PostgreSQL adapter (no build tools needed)
+    - sqlalchemy>=2.0    # ORM layer
+    - geoalchemy2        # PostGIS geometry types for SQLAlchemy
+    - fastapi            # REST API framework (Ch11 endpoint stub)
+    - uvicorn[standard]  # ASGI server for FastAPI

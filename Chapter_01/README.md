@@ -1,13 +1,13 @@
 # 🌍 Chapter 1: Climate Data Acquisition & Preprocessing
 
 > **GeoCascade** · Climate Change Geospatial Analysis Pipeline  
-> *From raw satellite and reanalysis archives to analysis-ready geospatial datasets*
+> *From raw satellite archives to analysis-ready geospatial datasets*
 
 ---
 
 ## 📋 Overview
 
-This chapter establishes the **data foundation** for the entire GeoCascade pipeline. You will learn to acquire multi-source climate datasets — satellite imagery, reanalysis grids, station records, and glacier inventories — using modern cloud-native APIs (STAC, Open-Meteo, CHIRPS), apply preprocessing and atmospheric correction, detect sensor anomalies with machine learning, and perform rigorous trend analysis using non-parametric statistics.
+This chapter establishes the **data foundation** for the entire GeoCascade pipeline. You will learn to acquire multi-source climate datasets — satellite imagery, station records, and glacier inventories — using modern cloud-native APIs (STAC, Open-Meteo, CHIRPS), apply preprocessing and atmospheric correction, detect sensor anomalies with machine learning, and perform rigorous trend analysis using non-parametric statistics.
 
 **Study region:** Patagonia, Chile/Argentina — one of the most climatically extreme and data-sparse regions on Earth, ideal for showcasing real-world geospatial challenges.
 
@@ -19,9 +19,9 @@ This chapter establishes the **data foundation** for the entire GeoCascade pipel
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        RAW DATA SOURCES                             │
 │                                                                     │
-│  Open-Meteo API   CHIRPS UCSB    Planetary Computer    GLIMS/RGI   │
-│  (ERA5-Land)      (GeoTIFFs)     (STAC: S2, DEM, L8)  (Glaciers)  │
-└────────┬──────────────┬──────────────────┬────────────────┬────────┘
+│  Open-Meteo API   CHIRPS UCSB    Planetary Computer    GLIMS/RGI    │
+│  (ERA5-Land)      (GeoTIFFs)     (STAC: S2, DEM, L8)  (Glaciers)    │
+└────────┬──────────────┬──────────────────┬────────────────┬─────────┘
          │              │                  │                │
          ▼              ▼                  ▼                ▼
 ┌────────────────┐ ┌──────────┐  ┌─────────────────┐ ┌──────────────┐
@@ -32,14 +32,14 @@ This chapter establishes the **data foundation** for the entire GeoCascade pipel
         │          │ py       │           │                  │
         ▼          └────┬─────┘           ▼                  ▼
 ┌────────────────┐      │       ┌─────────────────┐ ┌──────────────┐
-│ ERA5 time      │      │       │ 02_atmospheric_ │ │ Glacier       │
-│ series (11 var)│      │       │ correction.py   │ │ outlines      │
-│ Station data   │      │       │ (DOS1 / L2A)    │ │ (GeoJSON)     │
+│ ERA5 time      │      │       │ 02_atmospheric_ │ │ Glacier      │
+│ series (11 var)│      │       │ correction.py   │ │ outlines     │
+│ Station data   │      │       │ (DOS1 / L2A)    │ │ (GeoJSON)    │
 └───────┬────────┘      │       └────────┬────────┘ └──────────────┘
         │               │                │
         ▼               ▼                ▼
 ┌───────────────────────────────────────────────────────────────────┐
-│                   INTERMEDIATE PRODUCTS                            │
+│                   INTERMEDIATE PRODUCTS                           │
 │  03_station_ml_interpolation.py  ←  03a_fetch_real_weather_data   │
 │  (IsolationForest anomaly + RF temperature surface)               │
 └───────────────────────────────────────────────────────────────────┘
@@ -49,12 +49,12 @@ This chapter establishes the **data foundation** for the entire GeoCascade pipel
 │ 03b_era5_trend │ │ 04_precipitation_    │ │ 05_uhi_modis_mapping  │
 │ _analysis.py   │ │ anomaly.py           │ │ .py                   │
 │ (Mann-Kendall) │ │ (K-Means clustering) │ │ (MODIS LST / UHI)     │
-└───────┬────────┘ └──────────┬───────────┘ └──────────────────────┘
+└───────┬────────┘ └──────────┬───────────┘ └───────────────────────┘
         │                     │
         ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     data/processed/real_data/                       │
-│  climatology GeoTIFF · anomaly maps · trend figures · RMSE metrics │
+│  climatology GeoTIFF · anomaly maps · trend figures · RMSE metrics  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -81,7 +81,7 @@ See [PIPELINE_GUIDE.md](PIPELINE_GUIDE.md) for the recommended run order.
 
 ## Installation
 
-`ash
+`bash
 mamba create -n geocascade_env python=3.11 -y
 conda activate geocascade_env
 mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio pysheds geopandas rasterstats osmnx scikit-learn scipy matplotlib numpy pyproj requests pandas pytorch torchvision cpuonly -y
