@@ -71,7 +71,7 @@ mamba install -n geocascade_env -c conda-forge \
 > [!IMPORTANT]
 > Always activate the environment before running any script:
 > ```bash
-> conda activate geocascade_env
+> conda activate geocascade_env      / or mamba
 > ```
 
 > [!NOTE]
@@ -82,6 +82,8 @@ mamba install -n geocascade_env -c conda-forge \
 ## 🚀 Scripts — Run Order
 
 ### `00_real_data_downloader.py` — 🆕 MASTER DOWNLOADER
+
+python Chapter_01/00_real_data_downloader.py 
 
 > [!IMPORTANT]
 > **Run this first.** This single script downloads all real-world data required by the downstream scripts in one pass.

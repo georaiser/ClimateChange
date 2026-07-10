@@ -58,18 +58,7 @@ def _load_dotenv(env_path=None):
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip()
-                        # Strip a trailing inline comment (only if not inside quotes)
-                        if " #" in v:
-                            v = v.split(" #", 1)[0].strip()
-                        # Strip matching surrounding quotes
-                        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-                            v = v[1:-1]
-                        # Only skip if the var is already set to a NON-EMPTY value
-                        # (setdefault alone would wrongly skip when it's set-but-empty)
-                        if not os.environ.get(k):
-                            os.environ[k] = v
+                        os.environ.setdefault(k.strip(), v.strip())
             print(f"       [.env] Loaded: {os.path.abspath(p)}")
             return
     print("       [.env] No .env file found — using environment variables only.")
@@ -94,70 +83,13 @@ END       = "2024-12-31"
 
 # Optional: NOAA CDO token — loaded from .env automatically above
 # Manual override: set NOAA_TOKEN environment variable before running
-NOAA_TOKEN = os.environ.get("NOAA_TOKEN", "")
-
-def _debug_token_status():
-    if NOAA_TOKEN:
-        masked = NOAA_TOKEN[:4] + "…" + NOAA_TOKEN[-2:] if len(NOAA_TOKEN) > 6 else "…"
-        print(f"       [DEBUG] NOAA_TOKEN loaded: len={len(NOAA_TOKEN)}  value={masked}")
-    else:
-        print("       [DEBUG] NOAA_TOKEN is EMPTY — will use Open-Meteo fallback for stations.")
-
-_debug_token_status()
-
-# Track last request time per host so we can enforce a minimum gap between
-# calls to the SAME API, regardless of where in the script they're made from.
-_last_call_time = {}
-
-def _throttle(url, min_interval=3.0):
-    host = url.split("/")[2]
-    now = time.monotonic()
-    last = _last_call_time.get(host, 0)
-    wait = min_interval - (now - last)
-    if wait > 0:
-        time.sleep(wait)
-    _last_call_time[host] = time.monotonic()
-
-
-def _get_with_retry(url, max_retries=3, backoff_base=20, min_interval=3.0, **kwargs):
-    """
-    GET with retry/backoff for 429s (rate limiting) and transient 5xx errors.
-    Honors the Retry-After header when the server sends one, and enforces a
-    minimum gap between consecutive calls to the same host.
-    """
-    for attempt in range(1, max_retries + 1):
-        _throttle(url, min_interval)
-        r = requests.get(url, **kwargs)
-        if r.status_code == 429 or r.status_code >= 500:
-            wait = float(r.headers.get("Retry-After", backoff_base * attempt))
-            if attempt == max_retries:
-                r.raise_for_status()
-            print(f"         [RATE LIMIT] {r.status_code} — waiting {wait:.0f}s "
-                  f"(attempt {attempt}/{max_retries})...")
-            time.sleep(wait)
-            continue
-        r.raise_for_status()
-        return r
-    return r
-
+NOAA_TOKEN = os.environ.get("NOAA_TOKEN", "ddddddddddddddddd")
 
 # ==========================================
 # 1. ERA5-Land via Open-Meteo (Multi-Variable)
 # ==========================================
-def download_era5_multivar(force=False):
+def download_era5_multivar():
     print("\n[1/5] Downloading ERA5-Land multi-variable daily series (1993-2024)...")
-
-    daily_path   = os.path.join(OUT_DIR, "era5_daily_patagonia.csv")
-    monthly_path = os.path.join(OUT_DIR, "era5_monthly_patagonia.csv")
-
-    if not force and os.path.exists(daily_path) and os.path.exists(monthly_path):
-        print(f"       [CACHE] Found existing files, skipping API call:")
-        print(f"         {daily_path}")
-        print(f"         {monthly_path}")
-        df = pd.read_csv(daily_path, parse_dates=["date"]).set_index("date")
-        monthly = pd.read_csv(monthly_path, parse_dates=["date"])
-        return df, monthly
-
     variables = [
         "temperature_2m_max",
         "temperature_2m_min",
@@ -179,7 +111,8 @@ def download_era5_multivar(force=False):
         f"&timezone=America/Santiago"
     )
     print(f"       URL: {url[:100]}...")
-    r = _get_with_retry(url, timeout=120)
+    r = requests.get(url, timeout=120)
+    r.raise_for_status()
     data = r.json()
 
     df = pd.DataFrame(data["daily"])
@@ -277,47 +210,13 @@ def download_chirps(years=None):
 # ==========================================
 # 3. GHCN Stations via NOAA CDO or Open-Meteo fallback
 # ==========================================
-def _fetch_noaa_ghcn(station_id, start_year=2010, end_year=2023):
-    """
-    NOAA CDO API v2 caps the /data endpoint at roughly 1 year per request,
-    so pull it year by year and concatenate. Paginates within a year too,
-    in case a year's record count exceeds the 1000-row page limit.
-    """
-    all_rows = []
-    for year in range(start_year, end_year + 1):
-        offset = 1
-        while True:
-            url = (
-                f"https://www.ncei.noaa.gov/cdo-web/api/v2/data"
-                f"?datasetid=GHCND&stationid={station_id}"
-                f"&startdate={year}-01-01&enddate={year}-12-31"
-                f"&limit=1000&offset={offset}&units=metric&datatypeid=TMAX,TMIN,PRCP"
-            )
-            r = _get_with_retry(
-                url, headers={"token": NOAA_TOKEN}, timeout=30, min_interval=0.25
-            )
-            rows = r.json().get("results", [])
-            all_rows.extend(rows)
-            if len(rows) < 1000:
-                break
-            offset += 1000
-    return all_rows
-
-
-def download_ghcn_stations(force=False):
+def download_ghcn_stations():
     """
     Downloads GHCN-Daily data for nearby stations.
-    If NOAA_TOKEN is set, uses the official CDO API (chunked by year).
-    Anything NOAA can't provide falls back to a single BATCHED Open-Meteo
-    call (multi-location request) instead of one call per station, since
-    the free-tier archive API rate-limits aggressively on request count.
+    If NOAA_TOKEN is set, uses the official CDO API.
+    Otherwise falls back to Open-Meteo for virtual station data.
     """
     print("\n[3/5] Fetching real weather station data...")
-
-    path = os.path.join(OUT_DIR, "ghcn_stations_patagonia.csv")
-    if not force and os.path.exists(path):
-        print(f"       [CACHE] Found existing file, skipping fetch: {path}")
-        return pd.read_csv(path)
 
     # Real stations near Torres del Paine (WMO/GHCN IDs)
     stations = [
@@ -332,60 +231,64 @@ def download_ghcn_stations(force=False):
     ]
 
     all_records = []
-    fallback_stations = []  # stations that still need Open-Meteo
 
-    # --- Pass 1: NOAA CDO for stations with an id, if token available ---
     for stn in stations:
         print(f"       Fetching: {stn['name']} ({stn['lat']}, {stn['lon']})...")
+        source = "open-meteo (ERA5)"
+
+        # Try NOAA CDO if token provided
         if NOAA_TOKEN and stn["id"]:
             try:
-                rows = _fetch_noaa_ghcn(stn["id"])
+                url = (
+                    f"https://www.ncdc.noaa.gov/cdo-web/api/v2/data"
+                    f"?datasetid=GHCND&stationid={stn['id']}"
+                    f"&startdate=2010-01-01&enddate=2023-12-31"
+                    f"&limit=1000&units=metric&datatypeid=TMAX,TMIN,PRCP"
+                )
+                r = requests.get(url, headers={"token": NOAA_TOKEN}, timeout=30)
+                r.raise_for_status()
+                rows = r.json().get("results", [])
                 if rows:
                     df_stn = pd.DataFrame(rows)
                     df_stn["station_name"] = stn["name"]
                     df_stn["source"] = "NOAA GHCN"
                     all_records.append(df_stn)
+                    source = "NOAA GHCN"
                     print(f"         NOAA: {len(df_stn)} records")
                     continue
-                else:
-                    print(f"         NOAA returned no rows, using Open-Meteo fallback...")
             except Exception as e:
-                body = getattr(getattr(e, "response", None), "text", "")[:200]
-                print(f"         NOAA failed ({e}) {body}, using Open-Meteo fallback...")
-        fallback_stations.append(stn)
+                print(f"         NOAA failed ({e}), using Open-Meteo fallback...")
 
-    # --- Pass 2: ONE batched Open-Meteo call for everything still needed ---
-    if fallback_stations:
-        lats = ",".join(str(s["lat"]) for s in fallback_stations)
-        lons = ",".join(str(s["lon"]) for s in fallback_stations)
+        # Open-Meteo fallback (ERA5 virtual station)
         url = (
             f"https://archive-api.open-meteo.com/v1/archive"
-            f"?latitude={lats}&longitude={lons}"
+            f"?latitude={stn['lat']}&longitude={stn['lon']}"
             f"&start_date=2010-01-01&end_date=2023-12-31"
             f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max"
             f"&timezone=America/Santiago"
         )
         try:
-            r = _get_with_retry(url, timeout=180, min_interval=3.0)
+            r = requests.get(url, timeout=60)
+            r.raise_for_status()
             data = r.json()
-            # Multi-location requests return a list; single-location returns a dict.
-            results = data if isinstance(data, list) else [data]
-            for stn, res in zip(fallback_stations, results):
-                df_stn = pd.DataFrame(res["daily"])
-                df_stn["station_name"] = stn["name"]
-                df_stn["station_lat"]  = stn["lat"]
-                df_stn["station_lon"]  = stn["lon"]
-                df_stn["source"]       = "open-meteo (ERA5)"
-                all_records.append(df_stn)
-                print(f"         Open-Meteo (batched): {stn['name']} — {len(df_stn)} daily records")
+            df_stn = pd.DataFrame(data["daily"])
+            df_stn["station_name"] = stn["name"]
+            df_stn["station_lat"]  = stn["lat"]
+            df_stn["station_lon"]  = stn["lon"]
+            df_stn["source"]       = source
+            all_records.append(df_stn)
+            print(f"         Open-Meteo: {len(df_stn)} daily records")
         except Exception as e:
-            print(f"       [ERROR] Batched Open-Meteo fallback failed: {e}")
+            print(f"         [ERROR] {stn['name']}: {e}")
+
+        time.sleep(0.5)
 
     if not all_records:
         print("       [WARNING] No station data retrieved.")
         return None
 
     df_all = pd.concat(all_records, ignore_index=True)
+    path = os.path.join(OUT_DIR, "ghcn_stations_patagonia.csv")
     df_all.to_csv(path, index=False)
     print(f"       [SUCCESS] {len(all_records)} stations saved: {path}")
     return df_all
@@ -397,7 +300,7 @@ def download_ghcn_stations(force=False):
 def download_rgi_glaciers():
     """
     Downloads Randolph Glacier Inventory v7.0 for South America.
-    Region 17 (Southern Andes) includes the Patagonian Ice Fields.
+    Region 17 (Low Latitudes South) includes Patagonian Ice Fields.
     No registration required.
     """
     print("\n[4/5] Downloading RGI 7.0 Glacier Outlines (Patagonia)...")
@@ -409,21 +312,14 @@ def download_rgi_glaciers():
         print(f"       {len(gdf)} glacier polygons loaded.")
         return gdf
 
-    # RGI 7.0, region 17 = Southern Andes (covers Patagonia; region 16 is
-    # "Low Latitudes" and does NOT include Patagonia). glims.org no longer
-    # hotlinks region files directly for v7.0 (official host is NSIDC, which
-    # requires an Earthdata login) — UNESCO's IHP-WINS mirrors the same NSIDC
-    # dataset (DOI 10.5067/f6jmovy5navz) with direct, unauthenticated download.
-    url = (
-        "https://ihp-wins.unesco.org/dataset/33a5017a-e6e9-43cc-82d6-62da7fbb74d8"
-        "/resource/5d98469c-e845-4f9f-a2a3-84064ca1551e"
-        "/download/rgi2000-v7.0-g-17_southern_andes.zip"
-    )
+    # RGI 7.0 download URL for region 17 (South America Low Latitudes)
+    url = "https://www.glims.org/RGI/rgi70_files/17_rgi70_LowLatitudes.zip"
     print(f"       Downloading from: {url}")
     print("       (This is ~50MB, please wait...)")
 
     try:
-        r = _get_with_retry(url, timeout=300, min_interval=1.0)
+        r = requests.get(url, timeout=300, stream=True)
+        r.raise_for_status()
         z = zipfile.ZipFile(io.BytesIO(r.content))
         # Find the shapefile inside the zip
         shp_files = [n for n in z.namelist() if n.endswith(".shp")]
@@ -448,7 +344,7 @@ def download_rgi_glaciers():
 
     except Exception as e:
         print(f"       [WARNING] RGI download failed: {e}")
-        print(f"       You can download manually: {url}")
+        print("       You can download manually: https://www.glims.org/RGI/rgi70_files/17_rgi70_LowLatitudes.zip")
         return None
 
 

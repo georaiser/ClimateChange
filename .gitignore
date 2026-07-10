@@ -1,6 +1,8 @@
+.env
 *.tif*
 *.hdr
 *.enp
 *.dat*
 tmp/*
 brainstorm
+*/data/raw
