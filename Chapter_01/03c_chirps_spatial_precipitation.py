@@ -51,6 +51,30 @@ INNER_BOX = [-73.5, -51.5, -72.5, -50.5]  # Torres del Paine focus area
 CHIRPS_URL = "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_monthly/tifs"
 
 
+def bbox_to_indices(full_bbox, sub_bbox, shape):
+    """
+    Convert a lon/lat sub-bbox into row/col slices within an array that
+    covers full_bbox, assuming standard raster orientation: row 0 = north
+    (full_bbox maxlat), increasing row -> south; col 0 = west (full_bbox
+    minlon), increasing col -> east.
+    """
+    minlon, minlat, maxlon, maxlat = full_bbox
+    sub_minlon, sub_minlat, sub_maxlon, sub_maxlat = sub_bbox
+    nrows, ncols = shape
+
+    lon_res = (maxlon - minlon) / ncols
+    lat_res = (maxlat - minlat) / nrows
+
+    col_start = int((sub_minlon - minlon) / lon_res)
+    col_end   = int((sub_maxlon - minlon) / lon_res)
+    row_start = int((maxlat - sub_maxlat) / lat_res)
+    row_end   = int((maxlat - sub_minlat) / lat_res)
+
+    col_start, col_end = sorted((max(col_start, 0), min(col_end, ncols)))
+    row_start, row_end = sorted((max(row_start, 0), min(row_end, nrows)))
+    return slice(row_start, row_end), slice(col_start, col_end)
+
+
 def download_chirps_for_year(year):
     """Download 12 monthly CHIRPS GeoTIFFs for one year."""
     downloaded = []
@@ -172,9 +196,8 @@ def plot_chirps_analysis(annual_maps, clim_mean, clim_std, anomalies, lon_range,
     print("\n[4/4] Generating CHIRPS analysis plots...")
 
     years = sorted(annual_maps.keys())
-    point_series = [np.nanmean(annual_maps[y][
-        # Extract center-BBOX mean
-    ]) for y in years]
+    row_slice, col_slice = bbox_to_indices(BBOX, INNER_BOX, next(iter(annual_maps.values())).shape)
+    point_series = [np.nanmean(annual_maps[y][row_slice, col_slice]) for y in years]
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))
     fig.suptitle("CHIRPS v2.0 Precipitation Analysis — Patagonia (30-year)\n"
@@ -251,17 +274,18 @@ def plot_chirps_analysis(annual_maps, clim_mean, clim_std, anomalies, lon_range,
     ax.text(0.82, 0.95, "Argentina\n(Leeward)", transform=ax.transAxes,
             fontsize=9, va="top", color="brown")
 
-    # Panel 6: Z-score anomaly time series
+    # Panel 6: Z-score anomaly time series (same INNER_BOX region as Panel 4,
+    # so both "area-mean" panels actually describe the same area)
     ax = axes[1, 2]
-    anom_ts = [np.nanmean(anomalies[y]) for y in years if y in anomalies]
     anom_years = [y for y in years if y in anomalies]
+    anom_ts = [np.nanmean(anomalies[y][row_slice, col_slice]) for y in anom_years]
     bar_anom_cols = ["#d62728" if z < -1 else "#1f77b4" if z > 1 else "#7f7f7f"
                      for z in anom_ts]
     ax.bar(anom_years, anom_ts, color=bar_anom_cols, alpha=0.75)
     ax.axhline(0,  color="black", linewidth=1)
     ax.axhline(1,  color="#1f77b4", linestyle="--", linewidth=1, alpha=0.6, label="|Z|=1")
     ax.axhline(-1, color="#d62728", linestyle="--", linewidth=1, alpha=0.6)
-    ax.set_title("Area-Mean Precipitation Z-Score Anomaly", fontsize=10)
+    ax.set_title("Torres del Paine Precipitation Z-Score Anomaly", fontsize=10)
     ax.set_ylabel("Z-score")
     ax.legend(fontsize=8)
     ax.grid(axis="y", alpha=0.4)

@@ -90,7 +90,7 @@ LAT       = -51.0
 LON       = -73.0
 BBOX      = [-73.5, -51.5, -72.5, -50.5]  # [minx, miny, maxx, maxy]
 START     = "1993-01-01"
-END       = "2024-12-31"
+END       = "2025-12-31"
 
 # Optional: NOAA CDO token — loaded from .env automatically above
 # Manual override: set NOAA_TOKEN environment variable before running
@@ -145,7 +145,7 @@ def _get_with_retry(url, max_retries=3, backoff_base=20, min_interval=3.0, **kwa
 # 1. ERA5-Land via Open-Meteo (Multi-Variable)
 # ==========================================
 def download_era5_multivar(force=False):
-    print("\n[1/5] Downloading ERA5-Land multi-variable daily series (1993-2024)...")
+    print("\n[1/5] Downloading ERA5-Land multi-variable daily series (1993-2025)...")
 
     daily_path   = os.path.join(OUT_DIR, "era5_daily_patagonia.csv")
     monthly_path = os.path.join(OUT_DIR, "era5_monthly_patagonia.csv")
@@ -277,7 +277,7 @@ def download_chirps(years=None):
 # ==========================================
 # 3. GHCN Stations via NOAA CDO or Open-Meteo fallback
 # ==========================================
-def _fetch_noaa_ghcn(station_id, start_year=2010, end_year=2023):
+def _fetch_noaa_ghcn(station_id, start_year=2010, end_year=2025):
     """
     NOAA CDO API v2 caps the /data endpoint at roughly 1 year per request,
     so pull it year by year and concatenate. Paginates within a year too,
@@ -361,7 +361,7 @@ def download_ghcn_stations(force=False):
         url = (
             f"https://archive-api.open-meteo.com/v1/archive"
             f"?latitude={lats}&longitude={lons}"
-            f"&start_date=2010-01-01&end_date=2023-12-31"
+            f"&start_date=2010-01-01&end_date=2025-12-31"
             f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max"
             f"&timezone=America/Santiago"
         )

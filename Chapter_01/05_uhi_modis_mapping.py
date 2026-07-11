@@ -19,6 +19,7 @@ import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
 import urllib.request
+from datetime import datetime, timezone
 from pystac_client import Client
 import planetary_computer as pc
 
@@ -36,6 +37,23 @@ DATE_RANGE = "2023-01-01/2023-01-31" # Southern Hemisphere Summer
 # ==========================================
 # 2. Fetch MODIS LST Data via STAC
 # ==========================================
+def _item_datetime(item):
+    """
+    item.datetime is None for some MODIS items, which store their timestamp
+    in start_datetime/end_datetime instead (a known pystac behavior for
+    items representing a date range rather than a single instant). Fall
+    back to those, and finally to the earliest possible datetime so sorting
+    never crashes even if none of them are set.
+    """
+    if item.datetime is not None:
+        return item.datetime
+    for key in ("start_datetime", "end_datetime"):
+        raw = item.properties.get(key)
+        if raw:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def fetch_modis_lst():
     print("\n[INFO] Connecting to Microsoft Planetary Computer STAC API...")
     catalog = Client.open(
@@ -58,9 +76,9 @@ def fetch_modis_lst():
     print(f"       [SUCCESS] Found {len(items)} scenes. Selecting the clearest summer day...")
     
     # Sort by datetime to get the most recent granule (not items[-1] which is oldest)
-    items = sorted(items, key=lambda i: i.datetime, reverse=True)
+    items = sorted(items, key=_item_datetime, reverse=True)
     item = items[0]
-    print(f"       Selected Acquisition Date: {item.datetime}")
+    print(f"       Selected Acquisition Date: {_item_datetime(item)}")
     
     if "LST_Day_1km" not in item.assets:
         raise KeyError("'LST_Day_1km' asset not found in this MODIS item. Try a different date.")

@@ -199,7 +199,7 @@ def main():
         print(f"                     -> {directory}")
     print(f"\n  Total downloaded: {total_mb:.1f} MB")
     print("\n[SUCCESS] Chapter 1 Acquisition complete.")
-    print("  Next: python 02_atmospheric_correction.py")
+    print("  Next: python 02_atmospheric_correction.py only if you downloaded Sentinel-2 L1C.")
 
 
 if __name__ == "__main__":
