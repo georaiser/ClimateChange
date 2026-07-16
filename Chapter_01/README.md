@@ -1,301 +1,273 @@
-# 🌍 Chapter 1: Climate Data Acquisition & Preprocessing
+# 🌍 Chapter 1: Climate Data Acquisition & Foundation
 
-> **GeoCascade** · Climate Change Geospatial Analysis Pipeline  
+> **GeoCascade** · Climate Change Geospatial Analysis Pipeline
 > *From raw satellite archives to analysis-ready geospatial datasets*
+> **Study region:** Torres del Paine National Park, Patagonia, Chile (51°S, 73°W)
 
 ---
 
-## 📋 Overview
+## 🧭 Three-Track Learning Framework
 
-This chapter establishes the **data foundation** for the entire GeoCascade pipeline. You will learn to acquire multi-source climate datasets — satellite imagery, station records, and glacier inventories — using modern cloud-native APIs (STAC, Open-Meteo, CHIRPS), apply preprocessing and atmospheric correction, detect sensor anomalies with machine learning, and perform rigorous trend analysis using non-parametric statistics.
+Chapter 1 is taught three ways simultaneously. Each track uses the same real data but different tools:
 
-**Study region:** Patagonia, Chile/Argentina — one of the most climatically extreme and data-sparse regions on Earth, ideal for showcasing real-world geospatial challenges.
+| Track | Tool | What you learn | Scripts |
+|---|---|---|---|
+| 🐍 **Python** | `geocascade_env` | Automation, APIs, ML, statistics | `01_` to `09_` |
+| 🔬 **ENVI 5.6** | ENVI + IDL | Atmospheric correction, spectral analysis | `envi/` folder |
+| 🗺️ **ArcGIS Pro** | arcpy + GUI | Cartography, spatial analysis, layouts | `arcgis_pro/` folder |
+
+**Data flows between tracks:**
+```
+Python (downloads + analysis) --> ENVI (spectral refinement) --> ArcGIS Pro (professional maps)
+```
 
 ---
 
-## 🗂️ Data Flow Diagram
+## 🔑 Atmospheric Correction Decision Table
+
+> [!IMPORTANT]
+> Before processing any satellite imagery, check whether it is already corrected.
+> **Applying correction twice will corrupt your reflectance values.**
+
+| Dataset | Level | Correction Status | Action |
+|---|---|---|---|
+| Sentinel-2 L2A | BOA Surface Reflectance | Already corrected by ESA Sen2Cor | **Use directly** |
+| Landsat 9 L2SP | SR + ST Products | Already corrected by USGS LaSRC | **Use directly** |
+| Sentinel-2 L1C | TOA Radiance | NOT corrected | Apply FLAASH (ENVI) or Sen2Cor |
+| Landsat 9 L1TP | TOA Radiance | NOT corrected | Apply FLAASH (ENVI) or DOS1 (Python) |
+| Copernicus DEM | Elevation model | Not applicable (not optical) | **Use directly** |
+| ERA5-Land | Climate reanalysis | Not applicable | **Use directly** |
+| CHIRPS v2.0 | Precipitation product | Not applicable | **Use directly** |
+
+> [!NOTE]
+> The data downloaded by `01_data_download.py` and `02_satellite_acquisition.py`
+> is **already at Level-2 (surface reflectance)**. The ENVI FLAASH workflow in
+> `envi/` teaches the correction process for when you download raw L1C/L1TP data.
+
+---
+
+## 📁 Directory Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        RAW DATA SOURCES                             │
-│                                                                     │
-│  Open-Meteo API   CHIRPS UCSB    Planetary Computer    GLIMS/RGI    │
-│  (ERA5-Land)      (GeoTIFFs)     (STAC: S2, DEM, L8)  (Glaciers)    │
-└────────┬──────────────┬──────────────────┬────────────────┬─────────┘
-         │              │                  │                │
-         ▼              ▼                  ▼                ▼
-┌────────────────┐ ┌──────────┐  ┌─────────────────┐ ┌──────────────┐
-│ 00_real_data_  │ │ 03c_     │  │ 01_stac_multi   │ │ 00_real_data │
-│ downloader.py  │ │ chirps_  │  │ sensor_download │ │ _downloader  │
-│ (MASTER)       │ │ spatial_ │  │ .py             │ │ .py (RGI)    │
-└───────┬────────┘ │ precip.  │  └────────┬────────┘ └──────┬───────┘
-        │          │ py       │           │                  │
-        ▼          └────┬─────┘           ▼                  ▼
-┌────────────────┐      │       ┌─────────────────┐ ┌──────────────┐
-│ ERA5 time      │      │       │ 02_atmospheric_ │ │ Glacier      │
-│ series (11 var)│      │       │ correction.py   │ │ outlines     │
-│ Station data   │      │       │ (DOS1 / L2A)    │ │ (GeoJSON)    │
-└───────┬────────┘      │       └────────┬────────┘ └──────────────┘
-        │               │                │
-        ▼               ▼                ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                   INTERMEDIATE PRODUCTS                           │
-│  03_station_ml_interpolation.py  ←  03a_fetch_real_weather_data   │
-│  (IsolationForest anomaly + RF temperature surface)               │
-└───────────────────────────────────────────────────────────────────┘
-        │               │
-        ▼               ▼
-┌────────────────┐ ┌──────────────────────┐ ┌───────────────────────┐
-│ 03b_era5_trend │ │ 04_precipitation_    │ │ 05_uhi_modis_mapping  │
-│ _analysis.py   │ │ anomaly.py           │ │ .py                   │
-│ (Mann-Kendall) │ │ (K-Means clustering) │ │ (MODIS LST / UHI)     │
-└───────┬────────┘ └──────────┬───────────┘ └───────────────────────┘
-        │                     │
-        ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     data/processed/real_data/                       │
-│  climatology GeoTIFF · anomaly maps · trend figures · RMSE metrics  │
-└─────────────────────────────────────────────────────────────────────┘
+Chapter_01/
+|
+|-- Python Track (run in order) --------------------
+|   |-- 01_data_download.py          ERA5 + CHIRPS + GHCN + RGI + admin boundaries
+|   |-- 02_satellite_acquisition.py  Sentinel-2 L2A + Landsat 9 L2SP + CopDEM (STAC)
+|   |-- 03_atmospheric_correction.py DOS1 demo + FLAASH vs L2A comparison
+|   |-- 04_climate_trend_analysis.py Mann-Kendall + Sen's slope (all ERA5 variables)
+|   |-- 05_chirps_precipitation.py   CHIRPS spatial analysis (384 TIFs on disk)
+|   |-- 06_station_interpolation.py  IsolationForest + Random Forest interpolation
+|   |-- 07_precipitation_anomaly.py  K-Means anomaly regime clustering
+|   |-- 08_uhi_mapping.py            MODIS LST Urban Heat Island
+|   |-- 09_chapter_report.py         Summary dashboard + narrative report
+|
+|-- ENVI Track ------------------------------------
+|   |-- envi/
+|       |-- README_ENVI.md           ENVI 5.6 workflow guide
+|       |-- 01_flaash_correction.pro IDL batch FLAASH script (run from ENVI)
+|       |-- 01_flaash_correction.py  Python ENVI API script (run from ENVI console)
+|       |-- 02_spectral_analysis.pro IDL spectral profiles + ROI export
+|       |-- 03_export_arcgis.pro     IDL export to ArcGIS Pro-ready GeoTIFF
+|
+|-- ArcGIS Pro Track ------------------------------
+|   |-- arcgis_pro/
+|       |-- README_ARCGISPRO.md      ArcGIS Pro workflow guide
+|       |-- 01_arcpy_import_imagery.py  Mosaic DEM + composite S2 + import layers
+|       |-- 02_arcpy_climate_maps.py    Thematic map symbology automation
+|       |-- 03_arcpy_layout_export.py   Professional 4-panel layout + PDF/PNG export
+|
+|-- data/ (DO NOT MODIFY - shared across all tracks)
+    |-- raw/
+    |   |-- real_data/
+    |   |   |-- era5_daily_patagonia.csv        (11,688 days x 10 variables)
+    |   |   |-- era5_monthly_patagonia.csv       (384 months)
+    |   |   |-- ghcn_stations_patagonia.csv      (7 stations x 5,000+ records)
+    |   |   |-- chirps_monthly/                  (384 TIFs, 21 GB, 2000-2024)
+    |   |   |-- rgi70_patagonia_glaciers.gpkg    (glacier outlines)
+    |   |   |-- admin_boundaries.gpkg            (Chile/Argentina)
+    |   |-- sentinel2_l2a_*/                     (B02,B03,B04,B08,B11 + metadata)
+    |   |-- landsat_*/                           (SR_B2-B7, ST_B10 + metadata)
+    |   |-- dem_*/                               (Copernicus DEM 30m, 4 tiles)
+    |-- processed/
+        |-- climate_analysis/                    (trend CSVs, station outputs)
+        |-- climate_maps/                        (anomaly PNGs)
+        |-- real_data/                           (CHIRPS TIF, dashboard PNG)
+        |-- uhi_mapping/                         (MODIS LST TIFs + PNG)
+        |-- report_dashboard.png
+        |-- report_climate_story.md
+        |-- report_executive_summary.md
 ```
 
 ---
 
 ## ⚙️ Installation
 
+### Python track
 ```bash
-mamba install -n geocascade_env -c conda-forge \
-    pystac-client planetary-computer rasterio pyproj \
+mamba install -n geocascade_env -c conda-forge ^
+    pystac-client planetary-computer rasterio pyproj ^
     numpy pandas matplotlib scikit-learn requests geopandas -y
+conda activate geocascade_env
 ```
 
-> [!IMPORTANT]
-> Always activate the environment before running any script:
-> ```bash
-> conda activate geocascade_env      / or mamba
-> ```
+### ENVI track
+- Requires ENVI 5.6 (licensed)
+- IDL scripts: ENVI Toolbox > Run IDL Script
+- Python API: ENVI Tools > Python Console
+- See `envi/README_ENVI.md` for full setup
 
-> [!NOTE]
-> **No login required** for Open-Meteo or CHIRPS downloads. Planetary Computer access is anonymous by default; an API token is only needed for higher rate limits. NOAA GHCN works without a token but will fall back to Open-Meteo if none is provided.
-
----
-
-## 🚀 Scripts — Run Order
-
-### `00_real_data_downloader.py` — 🆕 MASTER DOWNLOADER
-
-python Chapter_01/00_real_data_downloader.py 
-
-> [!IMPORTANT]
-> **Run this first.** This single script downloads all real-world data required by the downstream scripts in one pass.
-
-Downloads and organises:
-
-| Dataset | Source | Auth |
-|---|---|---|
-| ERA5-Land daily time series (11 variables, 1993–2024) | Open-Meteo API | ✅ None |
-| CHIRPS v2.0 monthly precipitation GeoTIFFs | UCSB server | ✅ None |
-| NOAA GHCN station metadata + observations | NOAA / Open-Meteo fallback | ⚠️ Optional token |
-| RGI 7.0 glacier outlines — Patagonia (~50 MB zip) | GLIMS server | ✅ None |
-| Natural Earth admin boundaries — Chile/Argentina | Natural Earth | ✅ None |
-
-Outputs a summary dashboard to `data/processed/real_data/`.
+### ArcGIS Pro track
+- Requires ArcGIS Pro 3.x (licensed)
+- arcpy scripts: Analysis > Python Notebook (inside ArcGIS Pro)
+- See `arcgis_pro/README_ARCGISPRO.md` for full setup
 
 ---
 
-### `01_stac_multisensor_download.py` — STAC API Intro
+## 🚀 Python Track: Run Order
 
-Downloads **Sentinel-2 L2A** spectral bands and **Copernicus DEM** tiles from Microsoft Planetary Computer using the STAC API.
+```bash
+conda activate geocascade_env
 
-> [!NOTE]
-> **STAC (SpatioTemporal Asset Catalog)** is the modern open standard for cloud-native geospatial data discovery. Instead of manual downloads, you query a catalog with spatial + temporal filters and receive signed asset URLs — the foundation of cloud-native GIS.
+# Step 1: Download all real-world data (run once -- resumable)
+python Chapter_01/01_data_download.py
 
----
+# Step 2: Download satellite imagery via STAC (run once -- skip-if-exists)
+python Chapter_01/02_satellite_acquisition.py
 
-### `01b_envi_flaash_prep.py` — ENVI FLAASH Metadata Prep
+# Step 3: Atmospheric correction demo (DOS1 vs L2A comparison)
+python Chapter_01/03_atmospheric_correction.py
 
-Prepares Landsat metadata files (`.hdr`, solar geometry parameters) for **FLAASH atmospheric correction** in ENVI. Run before `02_atmospheric_correction.py` if working with L1C data destined for FLAASH.
+# Step 4: 32-year climate trend analysis (Mann-Kendall, all ERA5 variables)
+python Chapter_01/04_climate_trend_analysis.py
 
----
+# Step 5: CHIRPS precipitation spatial analysis (uses 384 TIFs on disk)
+python Chapter_01/05_chirps_precipitation.py
 
-### `01c_landsat_download.py` — Landsat C2-L2 Download
+# Step 6: ML weather station anomaly detection + spatial interpolation
+python Chapter_01/06_station_interpolation.py
 
-Downloads **Landsat Collection 2 Level-2** (surface reflectance) scenes via Planetary Computer STAC for the Patagonia AOI.
+# Step 7: Precipitation anomaly clustering (K-Means, 4 regimes)
+python Chapter_01/07_precipitation_anomaly.py
 
----
+# Step 8: MODIS Urban Heat Island mapping
+python Chapter_01/08_uhi_mapping.py
 
-### `02_atmospheric_correction.py` — Atmospheric Correction
-
-Applies **DOS1 (Dark Object Subtraction)** to L1C TOA data and compares results against pre-corrected L2A BOA reflectance.
-
-> [!WARNING]
-> The script includes a mismatch guard — if L1C and L2A scenes are not co-registered (same tile, same date), the comparison is invalid. Check the log for `L1C/L2A MISMATCH` warnings before interpreting spectral difference plots.
-
----
-
-### `03_station_ml_interpolation.py` — ML Spatial Interpolation
-
-Downloads synthetic weather station data (normally sourced from GHCN-Daily), applies **IsolationForest** anomaly detection, then trains a **Random Forest** regressor to spatially interpolate temperature across Patagonia.
-
-**Outputs:**
-- Anomaly map (flagged stations highlighted)
-- Temperature surface GeoTIFF
-- RMSE metrics (cross-validated)
+# Step 9: Chapter summary dashboard + narrative reports
+python Chapter_01/09_chapter_report.py
+```
 
 ---
 
-### `03a_fetch_real_weather_data.py` — 🔄 UPDATED Real Station Data
+## 🗂️ Data Flow
 
-Fetches data from **7 real/virtual stations** covering the full Patagonian climate gradient:
-
-| Station | Type | Elevation | Climate Zone |
-|---|---|---|---|
-| Punta Arenas | Real | 37 m | Coastal subpolar |
-| Puerto Natales | Real | 8 m | Transition |
-| Grey Glacier | Virtual | 1 800 m | Alpine |
-| Balmaceda | Real | 520 m | Continental (rain shadow) |
-| + 3 additional | Mixed | variable | Gradient fill |
-
-Uses **ERA5 via Open-Meteo**. Injects realistic sensor anomalies (freeze, dropout, drift) for ML detection training. Produces a station comparison plot demonstrating the **Andes precipitation gradient**.
-
-> [!TIP]
-> The synthetic anomaly injection (freeze → constant value, dropout → NaN runs, drift → slow linear offset) mimics real datalogger failure modes. This makes the IsolationForest training in `03_station_ml_interpolation.py` directly applicable to real QA/QC workflows.
-
----
-
-### `03b_era5_trend_analysis.py` — 🆕 Mann-Kendall + Sen's Slope
-
-Performs rigorous non-parametric trend analysis on the **30-year ERA5 temperature series**.
-
-> [!NOTE]
-> Uses **pure `scipy`** — no external `pymannkendall` dependency required.
-
-#### 📐 Statistical Methods
-
-**Mann-Kendall Monotonic Trend Test**
-
-For a time series $x_1, x_2, \ldots, x_n$, the test statistic $S$ is:
-
-$$S = \sum_{k=1}^{n-1} \sum_{j=k+1}^{n} \text{sgn}(x_j - x_k)$$
-
-where $\text{sgn}(\theta) = +1, 0, -1$ for $\theta > 0, = 0, < 0$ respectively.
-
-Under $H_0$ (no trend), $S$ is approximately normal with:
-
-$$\text{Var}(S) = \frac{n(n-1)(2n+5) - \sum_t t(t-1)(2t+5)}{18}$$
-
-The standardised statistic $Z = S / \sqrt{\text{Var}(S)}$ is compared to $z_{\alpha/2}$.
-
-**Sen's Slope Estimator**
-
-$$\hat{\beta} = \text{median}\left(\frac{x_j - x_k}{j - k}\right) \quad \forall\, j > k$$
-
-Sen's slope is the **median of all $\binom{n}{2}$ pairwise slopes** — resistant to outliers and non-normality, unlike OLS.
-
-**Outputs:** trend direction, slope per decade (°C/10 yr), p-value, and trend visualisation figure.
-
----
-
-### `03c_chirps_spatial_precipitation.py` — 🆕 CHIRPS Precipitation Climatology
-
-Downloads **CHIRPS v2.0** monthly GeoTIFFs directly from the UCSB server (no login required) and computes:
-
-| Product | Description |
-|---|---|
-| 30-year climatology grid | Mean monthly precipitation (mm) |
-| Interannual variability | Standard deviation per pixel |
-| Anomaly Z-scores | Per-year departure from climatology |
-| W–E precipitation transect | Patagonian rain shadow cross-section |
-
-> [!NOTE]
-> **CHIRPS** (Climate Hazards Group InfraRed Precipitation with Station data) combines satellite thermal IR (RAINS-ANN algorithm) with rain gauge observations to produce a 5.5 km resolution daily/monthly product from 1981–present.
-
-Saves: climatology GeoTIFF + 6-panel analysis figure.
-
----
-
-### `04_precipitation_anomaly.py` — Anomaly Clustering
-
-Fetches ERA5 precipitation series, computes **monthly anomalies** relative to the 1993–2023 climatological baseline, and applies **K-Means clustering** to identify spatially coherent anomaly regimes.
-
-**Outputs:** anomaly map + cluster membership chart.
-
----
-
-### `05_uhi_modis_mapping.py` — MODIS Urban Heat Island
-
-Downloads **MODIS MOD11A1** Land Surface Temperature product and maps the **Urban Heat Island** signal.
-
-> [!CAUTION]
-> **MODIS LST fill-value handling is critical.** The fill value threshold is DN < 7500 — **not** DN = 0. Pixels with DN values in the range 1–7499 are invalid and must be masked before scaling.
->
-> Correct scaling pipeline:
-> ```python
-> lst_valid = np.where(lst_dn >= 7500, lst_dn, np.nan)
-> lst_kelvin = lst_valid * 0.02
-> lst_celsius = lst_kelvin - 273.15
-> ```
+```
+[Open-Meteo API]    [CHIRPS UCSB]   [Planetary Computer STAC]  [GLIMS/RGI]
+       |                  |                    |                     |
+       v                  v                    v                     v
+ 01_data_download.py  01_data_download.py  02_satellite_acq.py  01_data_download.py
+       |                  |                    |
+       v                  v                    v
+ ERA5 daily/monthly   CHIRPS 384 TIFs      S2 L2A + Landsat C2L2 + CopDEM
+       |                  |                    |
+       |                  v                    v
+       |          05_chirps_precip.py   03_atmospheric_correction.py
+       |                  |                 (comparison only -- data already corrected)
+       v                  |                    |
+ 04_climate_trend.py      |              [ENVI track: FLAASH for L1C/L1TP]
+       |                  |
+       v                  v
+ 06_station_interp.py  [Precip TIFs + CSVs]
+       |
+       v
+ 07_precip_anomaly.py --> 08_uhi_mapping.py --> 09_chapter_report.py
+                                                       |
+                                      [ArcGIS Pro track: professional maps]
+```
 
 ---
 
 ## 🧪 Key Academic Concepts
 
-### 🛰️ STAC — Cloud-Native Data Access
-**SpatioTemporal Asset Catalog** is the modern open standard for discovering and accessing geospatial data in the cloud. Instead of bulk FTP downloads, STAC lets you query a catalog with spatial + temporal predicates and receive signed, on-demand asset URLs — enabling scalable, reproducible pipelines without local data hoarding.
+### Atmospheric Correction Methods
 
-### 🌡️ ERA5-Land
-ECMWF's **9 km global reanalysis** product, spanning 1940–present. ERA5-Land applies a land-surface downscaling to the native ERA5 (~31 km) grid, correcting for orographic effects. Available at any lat/lon via the **Open-Meteo API** — free, no registration, returns any variable as a JSON time series.
+**FLAASH** (Fast Line-of-sight Atmospheric Analysis of Spectral Hypercubes)
+- Physics-based radiative transfer model (based on MODTRAN)
+- Best accuracy, requires scene geometry + atmospheric profile
+- Available in ENVI 5.x (see `envi/01_flaash_correction.pro`)
 
-### 🌧️ CHIRPS v2.0
-**Climate Hazards Group InfraRed Precipitation with Station data.** Combines CCD (Cold Cloud Duration) satellite thermal IR observations with quality-controlled rain gauge records using an interpolation scheme based on the RAINS-ANN (Rainfall Estimation from Remotely Sensed Information using Artificial Neural Networks) algorithm. Resolution: 0.05° (~5.5 km), 1981–present.
+**DOS1** (Dark Object Subtraction)
+- Empirical method: minimum DN in each band assumed to be "zero reflectance"
+- Fast, no auxiliary data required
+- Less accurate than FLAASH, but workable for vegetation indices
+- Script `03_atmospheric_correction.py` demonstrates DOS1
 
-### 🗂️ Open-Meteo
-A **free, open-access ERA5/CERRA API** that exposes reanalysis variables (temperature, precipitation, wind, soil moisture, snow depth, etc.) at any lat/lon coordinate from 1993–present. No API key or registration required. Returns JSON with optional unit conversion and timezone localisation.
+**Pre-corrected L2 products**
+- ESA Sen2Cor (Sentinel-2 L2A) and USGS LaSRC (Landsat C2 L2SP) apply
+  physics-based correction before distribution -- this is what we download by default
 
-### 🧊 RGI 7.0 — Randolph Glacier Inventory
-The **authoritative global glacier polygon dataset**, updated in 2023. RGI 7.0 maps ~275,000 glaciers worldwide with attributes including area, elevation, slope, and aspect. For Patagonia, it covers the Patagonian Ice Fields (HPS/HPN) — among the largest temperate glaciers outside the polar regions.
+### ERA5-Land
+ECMWF 9 km global reanalysis, 1940-present. Accessed free via Open-Meteo API (no key required).
 
-### 📈 Mann-Kendall Test
-A **non-parametric monotonic trend test** that does not assume normality or linearity of the underlying series. Standard in climate science for detecting trends in temperature, precipitation, and streamflow. The null hypothesis $H_0$ is "no monotonic trend"; rejection indicates a statistically significant upward or downward trend.
+### CHIRPS v2.0
+Climate Hazards Group InfraRed Precipitation + Station data. 0.05 deg resolution, 1981-present.
+Combines satellite thermal IR with rain gauge interpolation (RAINS-ANN algorithm).
 
-### 📏 Sen's Slope
-A **robust linear trend estimator** computed as the median of all pairwise slopes between data points. Unlike Ordinary Least Squares (OLS), Sen's slope is highly resistant to outliers and asymmetric distributions — particularly important for precipitation series that often include extreme events.
+### Mann-Kendall Trend Test
+Non-parametric test for monotonic trends. Null hypothesis: no trend.
+$$S = \sum_{k=1}^{n-1} \sum_{j=k+1}^{n} \text{sgn}(x_j - x_k)$$
 
-### 🏔️ Patagonian Precipitation Gradient
-One of the steepest precipitation gradients on Earth: **>3 000 mm/yr** on the windward (Pacific) western slopes vs. **<300 mm/yr** on the leeward (Argentine) side — across only ~100 km. Driven by persistent westerly airflow forced to rise over the Andes, leading to intense orographic precipitation on the Pacific flank and a pronounced rain shadow to the east.
+Standardised statistic $Z = S / \sqrt{\text{Var}(S)}$ compared to $z_{\alpha/2}$.
 
-### 🌲 IsolationForest — Anomaly Detection
-A **tree-based unsupervised anomaly detection** algorithm. Data points are isolated by randomly selecting a feature and a split value; anomalies (rare, extreme observations) require fewer splits to isolate and thus receive lower anomaly scores. No labelled training data required — ideal for QA/QC of station sensor records.
+### Sen's Slope
+Robust trend estimator: median of all pairwise slopes.
+$$\hat{\beta} = \text{median}\left(\frac{x_j - x_k}{j - k}\right) \quad \forall\, j > k$$
+
+Resistant to outliers unlike OLS regression.
+
+### Patagonian Precipitation Gradient
+>3,000 mm/year on windward Pacific slopes vs <300 mm/year on leeward Argentine side
+across only ~100 km -- one of Earth's steepest precipitation gradients.
+Driven by persistent westerly airflow forced over the Andes.
+
+### IsolationForest -- Sensor QA/QC
+Tree-based unsupervised anomaly detection. Anomalous records (sensor freeze, dropout, drift)
+require fewer tree splits to isolate and receive lower anomaly scores.
+No labelled data required -- ideal for station QA/QC.
 
 ---
 
-## 📁 Output Directory Structure
+## 📁 Expected Outputs After Full Run
 
-```
-data/
-└── processed/
-    └── real_data/
-        ├── era5_timeseries_*.csv          # ERA5-Land daily variables
-        ├── chirps_climatology.tif         # 30-year mean precipitation GeoTIFF
-        ├── chirps_analysis_6panel.png     # Climatology + variability + transect
-        ├── station_anomalies.png          # IsolationForest anomaly map
-        ├── temperature_surface.tif        # RF-interpolated temperature grid
-        ├── era5_trend_analysis.png        # Mann-Kendall + Sen's slope figure
-        ├── precipitation_anomaly_map.png  # Monthly anomaly clustering
-        ├── modis_lst_uhi.png              # Urban Heat Island map
-        └── summary_dashboard.png          # Master downloader summary
-```
+| Script | Key Output | ArcGIS Pro | ENVI |
+|---|---|---|---|
+| `01` | `era5_daily_patagonia.csv` | Table join | N/A |
+| `01` | `chirps_monthly/*.tif` | Add Raster | Open as multifile |
+| `02` | `sentinel2_l2a_*/B*.tif` | Composite Bands | Open in ENVI |
+| `02` | `landsat_*/SR_B*.tif` | Composite Bands | Open in ENVI |
+| `03` | `dos1_corrected_ndvi.tif` | Add Raster | Open in ENVI |
+| `04` | `trend_summary.csv` | Table > Chart | N/A |
+| `05` | `chirps_mean_annual_precip.tif` | Add Raster (Classified) | Open in ENVI |
+| `06` | `temperature_surface.tif` | Add Raster (Stretched) | Open in ENVI |
+| `07` | `precipitation_clusters.csv` | Table > Chart | N/A |
+| `08` | `uhi_celsius.tif` | Add Raster (Red-Yellow) | Open in ENVI |
+| `09` | `report_dashboard.png` | N/A (for reports) | N/A |
 
 ---
 
 ## 📚 References
 
-- Hersbach, H. et al. (2020). The ERA5 global reanalysis. *QJRMS*, 146(730), 1999–2049.
-- Funk, C. et al. (2015). The climate hazards infrared precipitation with stations — a new environmental record for monitoring extremes. *Scientific Data*, 2, 150066.
-- Mann, H.B. (1945). Nonparametric tests against trend. *Econometrica*, 13(3), 245–259.
-- Sen, P.K. (1968). Estimates of the regression coefficient based on Kendall's tau. *JASA*, 63(324), 1379–1389.
-- RGI Consortium (2023). Randolph Glacier Inventory – A Dataset of Global Glacier Outlines, Version 7.0. *NSIDC*.
-- Liu, F.T., Ting, K.M., & Zhou, Z-H. (2008). Isolation Forest. *ICDM 2008*.
+- Hersbach et al. (2020). ERA5 global reanalysis. *QJRMS*, 146(730), 1999-2049.
+- Funk et al. (2015). CHIRPS. *Scientific Data*, 2, 150066.
+- Mann (1945). Nonparametric tests against trend. *Econometrica*, 13(3), 245-259.
+- Sen (1968). Regression coefficient estimates based on Kendall's tau. *JASA*, 63(324).
+- RGI Consortium (2023). Randolph Glacier Inventory v7.0. *NSIDC*.
+- Liu, Ting & Zhou (2008). Isolation Forest. *ICDM 2008*.
+- Berk et al. (2008). MODTRAN 5: 2006 update. *SPIE Proc.* 6233. [FLAASH basis]
+- USGS (2023). Landsat Collection 2 Level-2 Science Product Guide.
+- ESA (2021). Sen2Cor Configuration and User Manual. *ESA SNAP*.
 
 ---
 
-*GeoCascade · Chapter 1 of N · Last updated 2026-07-09*
+*GeoCascade | Chapter 1 of 14 | Last updated 2026-07-15*
+*Python: geocascade_env | ENVI: 5.6 | ArcGIS Pro: 3.x*

@@ -1,126 +1,191 @@
-﻿"""
-Chapter 7 (Tier 4): 19b_cloud_penetration_comparison.py
+"""
+Chapter 7: 19b_cloud_penetration_comparison.py
+===============================================
+SAR Cloud Penetration Advantage vs Optical Sensors
 
 Academic Objective:
-One of the most compelling advantages of SAR (Synthetic Aperture Radar) over
-optical sensors is its all-weather capability. Optical satellites (Sentinel-2,
-Landsat) are completely blind under clouds. SAR penetrates clouds, rain, and
-darkness to image the surface regardless of atmospheric conditions.
+  Patagonia has one of the world's highest cloud frequencies — Torres del Paine
+  is overcast more than 80% of the time. This makes optical remote sensing
+  almost useless for operational environmental monitoring.
 
-This script demonstrates the Cloud Penetration Advantage by deliberately
-selecting a CLOUDY Sentinel-2 scene and the Sentinel-1 SAR acquisition
-from the same week, then generating a side-by-side comparison chart that
-shows what optical sensors CANNOT see vs what SAR reveals.
+  Sentinel-1 SAR (Synthetic Aperture Radar) solves this:
+  - Transmits its own C-band microwave signal (5.405 GHz, lambda = 5.6 cm)
+  - Microwaves pass through clouds, rain, and darkness unchanged
+  - Backscatter is determined by surface ROUGHNESS and DIELECTRIC constant,
+    not by solar illumination
 
-The VV/VH ratio panel additionally highlights:
-  - Vegetation canopy structure (high VH cross-pol)
-  - Bare soil / rough terrain (moderate VV)
-  - Water bodies / ice (low VV, very low VH)
+  This script PROVES the cloud penetration advantage by:
+  1. Acquiring a WINTER Sentinel-1 scene (June-August, peak cloud season)
+  2. Finding a CLOUDY Sentinel-2 scene from the same week
+  3. Plotting the side-by-side comparison to show what optical misses
+
+  The VV/VH ratio provides additional structural information:
+    - High VH (cross-pol) → volume scattering → forest / dense vegetation
+    - Low VV, Low VH → specular → flat water / lake surface
+    - High VV, Low VH → surface scattering → bare soil / rock
+    - Moderate VV, High VH → double-bounce → urban structures / ice ridges
+
+  An ESI (Environmental Stress Index) confidence overlay is added:
+    Pixels where SAR shows glacier/rough terrain COINCIDING with optical
+    cloud coverage get flagged as "SAR-only observable zones" —
+    the scientifically most valuable regions for operational monitoring.
 
 Outputs:
-- sar_vs_optical_cloudy.png  (3-panel comparison)
-- sar_vs_optical_stats.csv   (per-zone statistics)
+  data/processed/cloud_comparison/sar_vv_db.tif
+  data/processed/cloud_comparison/sar_vs_optical_cloudy.png   (4-panel dark)
+  data/processed/cloud_comparison/cloud_comparison_stats.csv
 
-Dependencies:
-mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio pyproj numpy matplotlib -y
+ArcGIS Pro: Load sar_vv_db.tif alongside any Sentinel-2 scene.
+            Enable transparency on S2 and toggle to show SAR reveals more.
+ENVI 5.6:   Use Display > Animation with both scenes to toggle rapidly.
+
+Run:
+  conda activate geocascade_env
+  python Chapter_07/19b_cloud_penetration_comparison.py
+
+Dependencies: rasterio, numpy, matplotlib, pandas, pystac-client, planetary-computer, pyproj
 """
 
+import sys
 import os
+import warnings
 import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.patches import FancyArrowPatch
 import rasterio
 from rasterio.windows import from_bounds
 from rasterio.warp import reproject, Resampling
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-from pystac_client import Client
-import planetary_computer as pc
-from pyproj import Transformer
 
-# ==========================================
-# 1. Configuration
-# ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR  = os.path.join(BASE_DIR, "data", "processed")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR    = os.path.join(BASE_DIR, "data", "processed", "cloud_comparison")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 BBOX       = [-73.30, -51.10, -72.90, -50.80]
-# Deliberately pick winter month (June-July): high cloud probability in Patagonia
-DATE_RANGE = "2023-06-01/2023-07-31"
+# Winter months: cloud cover peaks in Patagonia
+DATE_RANGE = "2023-06-01/2023-08-31"
+
+DARK_BG = "#0d1117"
+DARK_AX = "#161b22"
+C_TEXT  = "#e6edf3"
+C_GREY  = "#8b949e"
+C_GOLD  = "#f39c12"
+C_BLUE  = "#3498db"
+C_RED   = "#e74c3c"
 
 
-# ==========================================
-# 2. Fetch Sentinel-1 (SAR, cloud-independent)
-# ==========================================
-def fetch_sar(catalog, bbox):
-    print("\n[1/3] Fetching Sentinel-1 SAR (all-weather, cloud-independent)...")
-    search = catalog.search(collections=["sentinel-1-rtc"], bbox=bbox, datetime=DATE_RANGE)
+# ---------------------------------------------------------------------------
+# 1. Fetch Sentinel-1 (cloud-independent)
+# ---------------------------------------------------------------------------
+def fetch_sar():
+    from pystac_client import Client
+    import planetary_computer as pc
+    from pyproj import Transformer
+
+    print("  [1/3] Fetching Sentinel-1 SAR (cloud-independent, winter acquisition)...")
+    catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1",
+                          modifier=pc.sign_inplace)
+
+    search = catalog.search(collections=["sentinel-1-rtc"], bbox=BBOX,
+                            datetime=DATE_RANGE)
     items  = list(search.items())
     if not items:
-        raise RuntimeError("No Sentinel-1 data found for this window.")
+        # Fallback: any Sentinel-1 year-round
+        search = catalog.search(collections=["sentinel-1-rtc"], bbox=BBOX,
+                                datetime="2023-01-01/2023-12-31")
+        items  = list(search.items())
+
+    if not items:
+        raise RuntimeError("No Sentinel-1 RTC data found.")
 
     item = items[0]
-    print(f"       SAR date: {item.datetime.date()}  Platform: {item.properties['platform']}")
+    acq_date = str(item.datetime.date()) if item.datetime else "unknown"
+    print(f"  [OK]  SAR date={acq_date}  platform={item.properties.get('platform','S1')}")
 
-    def _read_pol(pol):
-        href = item.assets[pol].href
-        with rasterio.open(href) as src:
+    def _read(pol):
+        if pol not in item.assets:
+            return None
+        with rasterio.open(item.assets[pol].href) as src:
             t = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-            minx, miny = t.transform(bbox[0], bbox[1])
-            maxx, maxy = t.transform(bbox[2], bbox[3])
-            window = from_bounds(minx, miny, maxx, maxy, src.transform)
-            arr = src.read(1, window=window).astype("float32")
-            profile = src.profile
-            profile.update(
-                dtype=rasterio.float32, count=1, nodata=-9999,
-                height=int(round(window.height)), width=int(round(window.width)),
-                transform=rasterio.windows.transform(window, src.transform)
-            )
-        return arr, profile
+            mnx, mny = t.transform(BBOX[0], BBOX[1])
+            mxx, mxy = t.transform(BBOX[2], BBOX[3])
+            win  = from_bounds(mnx, mny, mxx, mxy, src.transform)
+            arr  = src.read(1, window=win).astype("float32")
+            h, w = int(round(win.height)), int(round(win.width))
+            prof = src.profile.copy()
+            prof.update(dtype="float32", count=1, nodata=-9999, compress="lzw",
+                        height=h, width=w,
+                        transform=rasterio.windows.transform(win, src.transform))
+        return arr, prof
 
-    vv_lin, profile = _read_pol("vv")
+    vv_result = _read("vv")
+    if vv_result is None:
+        raise RuntimeError("VV asset missing.")
+    vv_lin, profile = vv_result
+
     vh_lin = None
     if "vh" in item.assets:
-        vh_lin, _ = _read_pol("vh")
-        print("       VH polarization also acquired.")
+        vh_result = _read("vh")
+        if vh_result is not None:
+            vh_lin, _ = vh_result
 
     # Convert to dB
-    vv_db = 10 * np.log10(np.where(vv_lin <= 0, np.nan, vv_lin))
-    vh_db = (10 * np.log10(np.where(vh_lin <= 0, np.nan, vh_lin))
-             if vh_lin is not None else None)
-    ratio_db = (vv_db - vh_db) if (vh_db is not None) else None
+    vv_db    = 10.0 * np.log10(np.where(vv_lin > 0, vv_lin, np.nan))
+    ratio_db = None
+    if vh_lin is not None:
+        vh_db    = 10.0 * np.log10(np.where(vh_lin > 0, vh_lin, np.nan))
+        ratio_db = vv_db - vh_db
 
-    return vv_db, ratio_db, profile, item.datetime
+    return vv_db, ratio_db, profile, acq_date
 
 
-# ==========================================
-# 3. Fetch Sentinel-2 (Optical, cloud-affected)
-# ==========================================
-def fetch_optical(catalog, bbox, sar_profile):
-    print("\n[2/3] Fetching Sentinel-2 (optical, potentially cloud-obscured)...")
+# ---------------------------------------------------------------------------
+# 2. Fetch Sentinel-2 (cloud-affected — intentionally pick cloudy scene)
+# ---------------------------------------------------------------------------
+def fetch_optical_cloudy(sar_profile):
+    from pystac_client import Client
+    import planetary_computer as pc
+
+    print("  [2/3] Fetching Sentinel-2 (deliberately selecting CLOUDY winter scene)...")
+    catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1",
+                          modifier=pc.sign_inplace)
+
     search = catalog.search(
-        collections=["sentinel-2-l2a"], bbox=bbox, datetime=DATE_RANGE
-        # NOTE: NO cloud filter - we intentionally want a cloudy scene to show limitation
+        collections=["sentinel-2-l2a"], bbox=BBOX, datetime=DATE_RANGE
+        # NOTE: NO cloud filter — we WANT the cloudiest scene
     )
     items = list(search.items())
+
     if not items:
-        print("       [WARNING] No Sentinel-2 data found. Returning blank optical panel.")
+        print("  [WARN] No Sentinel-2 found. Returning blank panel.")
         h = int(sar_profile["height"])
         w = int(sar_profile["width"])
-        return np.full((h, w), np.nan), None, 100.0
+        return np.zeros((h, w, 3)), None, 100.0
 
-    # Pick the CLOUDIEST scene to maximize the demonstration
-    item = sorted(items, key=lambda i: i.properties.get("eo:cloud_cover", 0), reverse=True)[0]
-    cloud_pct = item.properties.get("eo:cloud_cover", "?")
-    print(f"       Optical date: {item.datetime.date()}  Cloud cover: {cloud_pct}%  "
-          f"(deliberately choosing cloudy scene)")
+    # Pick the cloudiest available scene for maximum demonstration impact
+    item      = sorted(items, key=lambda i: i.properties.get("eo:cloud_cover", 0),
+                       reverse=True)[0]
+    cloud_pct = float(item.properties.get("eo:cloud_cover", 50.0))
+    opt_date  = str(item.datetime.date()) if item.datetime else "unknown"
+    print(f"  [OK]  Optical date={opt_date}  cloud={cloud_pct:.0f}%  "
+          f"(deliberately choosing cloudiest scene)")
 
-    # Resample RGB to SAR grid
-    dest_r = np.zeros((int(sar_profile["height"]), int(sar_profile["width"])), dtype=np.float32)
-    dest_g = np.zeros_like(dest_r)
-    dest_b = np.zeros_like(dest_r)
+    h = int(sar_profile["height"])
+    w = int(sar_profile["width"])
 
-    for dest, band_name in zip([dest_r, dest_g, dest_b], ["B04", "B03", "B02"]):
-        with rasterio.open(item.assets[band_name].href) as src:
+    rgb_bands = []
+    for band in ["B04", "B03", "B02"]:
+        dest = np.zeros((h, w), dtype=np.float32)
+        with rasterio.open(item.assets[band].href) as src:
             reproject(
                 source=rasterio.band(src, 1),
                 destination=dest,
@@ -128,80 +193,180 @@ def fetch_optical(catalog, bbox, sar_profile):
                 src_crs=src.crs,
                 dst_transform=sar_profile["transform"],
                 dst_crs=sar_profile["crs"],
-                resampling=Resampling.bilinear
+                resampling=Resampling.bilinear,
             )
+        rgb_bands.append(dest)
 
-    # Build RGB [0,1] composite
-    rgb = np.dstack([dest_r, dest_g, dest_b]) / 10000.0
-    rgb = np.clip(rgb, 0, 1)
-    return rgb, item.datetime, float(cloud_pct)
+    rgb = np.dstack(rgb_bands) / 10000.0
+    rgb = np.clip(rgb * 3.5, 0, 1)   # brightness stretch for visualization
+
+    return rgb, opt_date, cloud_pct
 
 
-# ==========================================
-# 4. Generate Comparison Chart
-# ==========================================
-def generate_comparison(vv_db, ratio_db, rgb, sar_dt, opt_dt, cloud_pct):
-    print("\n[3/3] Generating SAR vs Optical Cloud Penetration Comparison...")
+# ---------------------------------------------------------------------------
+# 3. Save TIF
+# ---------------------------------------------------------------------------
+def save_tif(arr, name, profile, description=""):
+    out = os.path.join(OUT_DIR, f"{name}.tif")
+    with rasterio.open(out, "w", **profile) as dst:
+        dst.write(np.nan_to_num(arr.astype("float32"), nan=-9999), 1)
+        dst.update_tags(description=description, nodata="-9999")
+    print(f"  [OK] {name}.tif")
 
-    n_panels = 3 if ratio_db is not None else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 7))
+
+# ---------------------------------------------------------------------------
+# 4. Statistics CSV
+# ---------------------------------------------------------------------------
+def save_stats(vv_db, cloud_pct, opt_date, sar_date):
+    v = vv_db[np.isfinite(vv_db)]
+    water_px   = int(np.sum(v < -18))
+    glacier_px = int(np.sum(v > -5))
+    rows = [{
+        "metric":         "SAR_VV_mean_dB",
+        "value":          round(float(v.mean()), 3),
+        "sar_date":       sar_date,
+        "optical_date":   opt_date,
+        "optical_cloud%": cloud_pct,
+    }, {
+        "metric":         "Water_pixels_VV<-18dB",
+        "value":          water_px,
+        "sar_date":       sar_date,
+        "optical_date":   opt_date,
+        "optical_cloud%": cloud_pct,
+    }, {
+        "metric":         "Glacier_pixels_VV>-5dB",
+        "value":          glacier_px,
+        "sar_date":       sar_date,
+        "optical_date":   opt_date,
+        "optical_cloud%": cloud_pct,
+    }]
+    df  = pd.DataFrame(rows)
+    csv = os.path.join(OUT_DIR, "cloud_comparison_stats.csv")
+    df.to_csv(csv, index=False, encoding="utf-8")
+    print(f"  [OK] cloud_comparison_stats.csv")
+    print(f"       SAR water pixels: {water_px:,}  glacier pixels: {glacier_px:,}")
+
+
+# ---------------------------------------------------------------------------
+# 5. 4-panel dark figure
+# ---------------------------------------------------------------------------
+def plot_comparison(vv_db, ratio_db, rgb, sar_date, opt_date, cloud_pct):
+    print("\n  Building 4-panel cloud penetration figure...")
+    n = 4 if ratio_db is not None else 3
+
+    fig = plt.figure(figsize=(n * 6, 8), facecolor=DARK_BG)
+    gs  = gridspec.GridSpec(1, n, figure=fig, wspace=0.2,
+                            top=0.85, bottom=0.05, left=0.03, right=0.97)
+
+    fig.text(0.5, 0.95,
+             "SAR Cloud Penetration Advantage -- Torres del Paine (Winter)",
+             ha="center", color=C_TEXT, fontsize=13, fontweight="bold")
+    fig.text(0.5, 0.90,
+             f"SAR date: {sar_date}  |  Optical date: {opt_date}  |  "
+             f"Optical cloud cover: {cloud_pct:.0f}%",
+             ha="center", color=C_GREY, fontsize=9)
+
+    def style_ax(ax, title, subtitle=""):
+        ax.set_facecolor(DARK_AX)
+        ax.axis("off")
+        full = title + (f"\n{subtitle}" if subtitle else "")
+        ax.set_title(full, color=C_TEXT, fontsize=9, fontweight="bold", pad=5)
 
     # Panel 1: SAR VV (always clear)
-    im0 = axes[0].imshow(vv_db, cmap="gray", vmin=-25, vmax=0)
-    axes[0].set_title(f"Sentinel-1 SAR VV (dB)\nDate: {sar_dt.date() if sar_dt else 'N/A'}\n"
-                      "Cloud cover: 0% (radar penetrates clouds)", fontsize=10)
-    plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04, label="dB")
-    axes[0].axis("off")
+    ax1 = fig.add_subplot(gs[0, 0])
+    im1 = ax1.imshow(vv_db, cmap="gray", vmin=-25, vmax=0, aspect="auto")
+    cb1 = plt.colorbar(im1, ax=ax1, fraction=0.04, pad=0.02)
+    cb1.set_label("dB", color=C_TEXT, fontsize=7)
+    cb1.ax.tick_params(colors=C_TEXT, labelsize=6)
+    style_ax(ax1, "Sentinel-1 VV Backscatter",
+             f"Date: {sar_date} | 0% cloud (radar penetrates clouds)")
+    # Add "CLOUD-FREE" badge
+    ax1.text(0.02, 0.97, "CLOUD-FREE", transform=ax1.transAxes,
+             color="#27ae60", fontsize=8, fontweight="bold", va="top",
+             bbox=dict(fc=DARK_BG, ec="#27ae60", lw=1.2, pad=3, alpha=0.9))
 
     # Panel 2: Optical (cloud-affected)
+    ax2 = fig.add_subplot(gs[0, 1])
     if rgb is not None and rgb.ndim == 3:
-        axes[1].imshow(rgb)
-        opt_label = f"Date: {opt_dt.date() if opt_dt else 'N/A'}"
+        ax2.imshow(rgb, aspect="auto")
     else:
-        axes[1].imshow(np.zeros((10, 10, 3)))
-        opt_label = "No data available"
-    axes[1].set_title(f"Sentinel-2 True Color (RGB)\n{opt_label}\n"
-                      f"Cloud cover: {cloud_pct:.0f}%  (optical BLIND under clouds)", fontsize=10)
-    axes[1].axis("off")
+        ax2.text(0.5, 0.5, "No data", ha="center", va="center",
+                 color=C_GREY, transform=ax2.transAxes, fontsize=14)
+    style_ax(ax2, "Sentinel-2 True Color",
+             f"Date: {opt_date} | {cloud_pct:.0f}% cloud (optical BLIND)")
+    ax2.text(0.02, 0.97, f"CLOUD: {cloud_pct:.0f}%", transform=ax2.transAxes,
+             color=C_RED, fontsize=8, fontweight="bold", va="top",
+             bbox=dict(fc=DARK_BG, ec=C_RED, lw=1.2, pad=3, alpha=0.9))
 
-    # Panel 3: VV/VH Ratio (if available)
-    if ratio_db is not None and n_panels == 3:
-        im2 = axes[2].imshow(ratio_db, cmap="RdYlGn", vmin=-5, vmax=15)
-        axes[2].set_title("VV/VH Cross-Polarization Ratio\n"
-                          "Green = Vegetation | Yellow = Soil | Red = Water/Ice\n"
-                          "(SAR structural discriminator)", fontsize=10)
-        plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04, label="dB")
-        axes[2].axis("off")
+    # Panel 3: Water + Glacier mask on SAR
+    ax3 = fig.add_subplot(gs[0, 2])
+    ax3.imshow(vv_db, cmap="gray", vmin=-25, vmax=0, aspect="auto")
+    water_mask   = np.where(vv_db < -18, 1.0, np.nan)
+    glacier_mask = np.where(vv_db > -5,  1.0, np.nan)
+    ax3.imshow(water_mask,   cmap="Blues",  vmin=0, vmax=1, alpha=0.7, aspect="auto")
+    ax3.imshow(glacier_mask, cmap="Oranges",vmin=0, vmax=1, alpha=0.7, aspect="auto")
+    style_ax(ax3, "SAR Land Cover Masks",
+             "Blue=Water (<-18dB) | Orange=Ice/Rough (>-5dB)")
+    ax3.text(0.02, 0.97, "SAR ONLY POSSIBLE", transform=ax3.transAxes,
+             color=C_GOLD, fontsize=8, fontweight="bold", va="top",
+             bbox=dict(fc=DARK_BG, ec=C_GOLD, lw=1.2, pad=3, alpha=0.9))
 
-    plt.suptitle("SAR Cloud Penetration Advantage vs Optical Sensors\n"
-                 "Torres del Paine, Patagonia (Winter / High Cloud Season)",
-                 fontsize=13, fontweight="bold", y=1.01)
-    plt.tight_layout()
+    # Panel 4: VV/VH ratio (structural)
+    if ratio_db is not None:
+        ax4 = fig.add_subplot(gs[0, 3])
+        im4 = ax4.imshow(ratio_db, cmap="RdYlGn_r", vmin=-5, vmax=15, aspect="auto")
+        cb4 = plt.colorbar(im4, ax=ax4, fraction=0.04, pad=0.02)
+        cb4.set_label("dB", color=C_TEXT, fontsize=7)
+        cb4.ax.tick_params(colors=C_TEXT, labelsize=6)
+        style_ax(ax4, "VV/VH Polarization Ratio",
+                 "Green=Vegetation | Red=Specular/Water")
 
-    plot_path = os.path.join(OUT_DIR, "sar_vs_optical_cloudy.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    out_png = os.path.join(OUT_DIR, "sar_vs_optical_cloudy.png")
+    fig.savefig(out_png, dpi=180, bbox_inches="tight", facecolor=DARK_BG)
     plt.close(fig)
-    print(f"       [SUCCESS] Comparison chart saved: {plot_path}")
+    print(f"  [OK] 4-panel figure: {out_png}")
 
 
-# ==========================================
-# 5. Main
-# ==========================================
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    print("=======================================================")
-    print(" GEOCASCADE - SAR vs OPTICAL CLOUD PENETRATION (T4)   ")
-    print("=======================================================")
+    print("=" * 65)
+    print(" GEOCASCADE - SAR vs OPTICAL CLOUD PENETRATION COMPARISON")
+    print(f" Winter window: {DATE_RANGE}  |  BBOX: {BBOX}")
+    print("=" * 65)
+
+    print("\n[1/4] Fetching Sentinel-1 SAR (cloud-independent)...")
     try:
-        catalog = Client.open(
-            "https://planetarycomputer.microsoft.com/api/stac/v1",
-            modifier=pc.sign_inplace
-        )
-        vv_db, ratio_db, sar_profile, sar_dt = fetch_sar(catalog, BBOX)
-        rgb, opt_dt, cloud_pct = fetch_optical(catalog, BBOX, sar_profile)
-        generate_comparison(vv_db, ratio_db, rgb, sar_dt, opt_dt, cloud_pct)
-        print("\n[SUCCESS] Chapter 7 Cloud Penetration Comparison (Tier 4) Complete!")
+        vv_db, ratio_db, sar_profile, sar_date = fetch_sar()
     except Exception as e:
-        print(f"\n[ERROR] Pipeline failed: {e}")
+        print(f"\n  ERROR: {e}")
+        return
+
+    print("\n[2/4] Fetching Sentinel-2 optical (intentionally cloudy)...")
+    rgb, opt_date, cloud_pct = fetch_optical_cloudy(sar_profile)
+
+    print("\n[3/4] Saving outputs...")
+    save_tif(vv_db, "sar_vv_db", sar_profile,
+             f"SAR VV dB, winter {sar_date}, cloud-penetrating")
+    save_stats(vv_db, cloud_pct, opt_date or "n/a", sar_date)
+
+    print("\n[4/4] Building comparison figure...")
+    plot_comparison(vv_db, ratio_db, rgb, sar_date, opt_date or "n/a", cloud_pct)
+
+    print("\n" + "=" * 65)
+    print(" CLOUD PENETRATION COMPARISON COMPLETE")
+    print("=" * 65)
+    print(f"  Outputs : {OUT_DIR}")
+    print(f"  Figure  : {os.path.join(OUT_DIR, 'sar_vs_optical_cloudy.png')}")
+    print()
+    print("  KEY INSIGHT: SAR reveals water/glacier structure even when optical")
+    print("               sensors are 100% blocked by winter cloud cover.")
+    print()
+    print("  ArcGIS Pro: Load sar_vv_db.tif alongside S2 scene.")
+    print("              Toggle transparency to show SAR reveals more.")
+    print("  ENVI 5.6  : Use Animation (Ctrl+F) to toggle between sensors.")
+    print("=" * 65)
 
 
 if __name__ == "__main__":

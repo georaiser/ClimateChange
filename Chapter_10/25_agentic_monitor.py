@@ -23,6 +23,7 @@ mamba install -n geocascade_env -c conda-forge rasterio numpy pandas matplotlib 
 \"\"\"
 
 import os
+import sys
 import json
 import glob
 import datetime
@@ -35,6 +36,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 try:
     import rasterio

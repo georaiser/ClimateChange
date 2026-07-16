@@ -29,11 +29,14 @@ mamba install -n geocascade_env -c conda-forge pytorch torchvision cpuonly raste
 import os
 import sys
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import rasterio
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 try:
     import torch
@@ -58,8 +61,12 @@ except ImportError:
     SK_OK = False
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-IN_CUBE   = os.path.join(BASE_DIR, '..', 'Chapter_08', 'data', 'processed', 'cascade_master_stack.tif')
-OUT_DIR   = os.path.join(BASE_DIR, 'data', 'processed')
+# Check fusion/ subdirectory first (new path), then legacy path
+_CH08 = os.path.join(BASE_DIR, '..', 'Chapter_08', 'data', 'processed')
+IN_CUBE = os.path.join(_CH08, 'fusion', 'cascade_master_stack.tif')
+if not os.path.exists(IN_CUBE):
+    IN_CUBE = os.path.join(_CH08, 'cascade_master_stack.tif')
+OUT_DIR   = os.path.join(BASE_DIR, 'data', 'processed', 'dl')
 os.makedirs(OUT_DIR, exist_ok=True)
 
 PATCH_SIZE  = 32
@@ -317,14 +324,32 @@ def evaluate_and_plot(pred, conf, lbl, hist, profile):
     plt.close(fig)
     print(f'       [SUCCESS] Figure: {fig_path}')
     pp = profile.copy()
-    pp.update(count=1, dtype=rasterio.uint8, nodata=0)
+    pp.update(count=1, dtype=rasterio.uint8, nodata=0, compress='lzw')
     with rasterio.open(os.path.join(OUT_DIR, 'cnn_landcover_prediction.tif'), 'w', **pp) as dst:
         dst.write(pred.astype(np.uint8), 1)
+        dst.update_tags(classes='1=Water,2=Glacier,3=Land_Veg', method='CNN_3layer')
     cp = profile.copy()
-    cp.update(count=1, dtype=rasterio.float32, nodata=-9999)
+    cp.update(count=1, dtype=rasterio.float32, nodata=-9999, compress='lzw')
     with rasterio.open(os.path.join(OUT_DIR, 'cnn_confidence_map.tif'), 'w', **cp) as dst:
         dst.write(np.where(pred == 0, -9999, conf).astype(np.float32), 1)
-    print(f'       [SUCCESS] GeoTIFFs saved: {OUT_DIR}')
+        dst.update_tags(description='CNN prediction confidence per pixel [0-1]')
+    # Export training history CSV
+    if hist['tl']:
+        pd.DataFrame({'epoch': range(1, len(hist['tl'])+1),
+                      'train_loss': hist['tl'],
+                      'val_loss':   hist['vl'],
+                      'val_acc':    hist['va']}
+                     ).to_csv(os.path.join(OUT_DIR, 'cnn_training_history.csv'),
+                              index=False, encoding='utf-8')
+    # Export class metrics CSV
+    if SK_OK and len(yt):
+        from sklearn.metrics import precision_recall_fscore_support
+        p, r, f, s = precision_recall_fscore_support(yt, yp, average=None, zero_division=0)
+        pd.DataFrame({'class': cls_names, 'precision': p.round(4),
+                      'recall': r.round(4), 'f1': f.round(4), 'support': s}
+                     ).to_csv(os.path.join(OUT_DIR, 'cnn_class_metrics.csv'),
+                              index=False, encoding='utf-8')
+    print(f'       [SUCCESS] GeoTIFFs + CSVs saved: {OUT_DIR}')
 
 # ==========================================================
 # Main

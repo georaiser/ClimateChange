@@ -43,6 +43,7 @@ Dependencies (SpatiaLite fallback -- always works):
 \"\"\"
 
 import os
+import sys
 import json
 import warnings
 import numpy as np
@@ -51,6 +52,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 warnings.filterwarnings('ignore')
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 try:
     import geopandas as gpd

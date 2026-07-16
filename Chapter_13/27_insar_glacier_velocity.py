@@ -36,12 +36,16 @@ mamba install -n geocascade_env -c conda-forge rasterio numpy scipy matplotlib -
 """
 
 import os
+import sys
 import warnings
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore")
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 try:
     import rasterio
@@ -62,8 +66,12 @@ except ImportError:
 # Configuration
 # ==========================================
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-SAR_DIR     = os.path.join(BASE_DIR, "..", "Chapter_07", "data", "processed")
-OUT_DIR     = os.path.join(BASE_DIR, "data", "processed")
+# Check new sar/ subdirectory first, then legacy path
+_SAR_BASE   = os.path.join(BASE_DIR, "..", "Chapter_07", "data", "processed")
+SAR_DIR     = os.path.join(_SAR_BASE, "sar")
+if not os.path.isdir(SAR_DIR):
+    SAR_DIR = _SAR_BASE
+OUT_DIR     = os.path.join(BASE_DIR, "data", "processed", "insar")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 WINDOW_SIZE = 64     # Correlation window (pixels)

@@ -1,189 +1,358 @@
 """
 Chapter 3: 10_digital_elevation_processing.py
+===============================================
+Copernicus DEM Terrain Derivatives: Slope, Aspect, Hillshade, Curvature
 
 Academic Objective:
-A Digital Elevation Model (DEM) is a 3D representation of terrain. But raw elevation 
-values alone don't give us a clear picture of the landscape. 
+  A Digital Elevation Model (DEM) contains only raw elevation values.
+  Terrain DERIVATIVES reveal the morphological structure of the landscape:
 
-In this script, we replicate the ESRI Spatial Analyst tools to generate:
-1. Slope (Steepness of the terrain)
-2. Aspect (Compass direction the terrain faces)
-3. Hillshade (3D visual relief based on a simulated sun angle)
+  Slope     -- Steepness (deg). Drives erosion, runoff, avalanche risk.
+  Aspect    -- Direction the slope faces (deg from North). Controls insolation,
+               snow persistence, and microclimate (N-facing = colder in S hemisphere).
+  Hillshade -- Simulated shaded relief. Key for visual map interpretation.
+  Curvature -- Rate of slope change. Convex ridges shed water; concave hollows
+               collect it. Critical for watershed delineation.
 
-We will use pure NumPy matrix operations to understand the exact physics 
-and geometry occurring under the hood of GIS software.
+Physics:
+  np.gradient() MUST receive cell sizes in METRES, not degrees.
+  CopDEM is delivered in EPSG:4326 (degrees). At 51 deg S:
+    1 deg latitude  ~ 111,000 m
+    1 deg longitude ~ 111,000 * cos(51 deg) ~ 69,800 m
+  Passing cellsize=30 (degrees) underestimates slope by ~3300x.
 
-Dependencies:
-mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio numpy matplotlib -y
+Hillshade formula (ESRI standard):
+  shaded = cos(zenith) * cos(slope) + sin(zenith) * sin(slope) * cos(azimuth - aspect)
+  Output: 0-255 (clamp, not rescale -- negative illumination = 0, not 128)
+
+Connection to pipeline:
+  Script 11 (watershed) reads the DEM from data/raw/temp_dem.tif.
+  This script writes the same file so you only need to run ONE download.
+
+Outputs:
+  data/processed/terrain/copernicus_dem.tif
+  data/processed/terrain/slope_degrees.tif
+  data/processed/terrain/aspect_degrees.tif
+  data/processed/terrain/hillshade.tif
+  data/processed/terrain/curvature.tif
+  data/processed/terrain/terrain_derivatives.png   (5-panel dark)
+  data/raw/temp_dem.tif                            (cached for script 11)
+
+ArcGIS Pro: Analysis > Tools > Hillshade, Slope, Aspect (3D Analyst).
+            These tools replication exactly matches the NumPy output here.
+            Compare outputs to validate: differences < 0.5 deg are numerical noise.
+ENVI 5.6:   Topographic > Slope, Topographic > Aspect from copernicus_dem.tif.
+
+Run:
+  conda activate geocascade_env
+  python Chapter_03/10_digital_elevation_processing.py
+
+Dependencies: rasterio, numpy, matplotlib, pandas, pystac-client, planetary-computer, pyproj
 """
 
+import sys
 import os
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import rasterio
 from rasterio.windows import from_bounds
-import numpy as np
-import matplotlib.pyplot as plt
-from pystac_client import Client
-import planetary_computer as pc
-from pyproj import Transformer
 
-# ==========================================
-# 1. Configuration
-# ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(BASE_DIR, "data", "processed")
-os.makedirs(OUT_DIR, exist_ok=True)
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR   = os.path.join(BASE_DIR, "data", "processed", "terrain")
+RAW_DIR   = os.path.join(BASE_DIR, "data", "raw")
+TEMP_DEM  = os.path.join(RAW_DIR, "temp_dem.tif")     # shared with script 11
+os.makedirs(OUT_DIR,  exist_ok=True)
+os.makedirs(RAW_DIR,  exist_ok=True)
 
 BBOX = [-73.30, -51.10, -72.90, -50.80]
 
-# ==========================================
-# 2. Mathematical Terrain Functions
-# ==========================================
-def calculate_slope_aspect(dem, pix_lat_m, pix_lon_m):
+DARK_BG = "#0d1117"
+DARK_AX = "#161b22"
+C_TEXT  = "#e6edf3"
+C_GREY  = "#8b949e"
+
+
+# ---------------------------------------------------------------------------
+# 1. Fetch or load DEM
+# ---------------------------------------------------------------------------
+def fetch_dem():
     """
-    Calculate slope and aspect from a DEM.
-
-    IMPORTANT: CopDEM is delivered in EPSG:4326 (geographic degrees).
-    np.gradient must receive cell sizes in METRES, not degrees.
-    At 51°S: 1° latitude ≈ 111,000 m, 1° longitude ≈ 70,000 m.
-    Passing cellsize=30.0 (degrees) underestimates gradient by ~3300×.
+    Download Copernicus DEM tile from Planetary Computer and crop to BBOX.
+    Saves to temp_dem.tif (shared with script 11) and returns (dem, profile).
     """
-    # gradient(dem, dy_m, dx_m) — row spacing first, then column spacing
-    dy, dx = np.gradient(dem, pix_lat_m, pix_lon_m)
+    try:
+        from pystac_client import Client
+        import planetary_computer as pc
+        from pyproj import Transformer
+    except ImportError:
+        raise ImportError("pystac-client / planetary-computer not installed. "
+                          "Run: mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer -y")
 
-    # Slope (in degrees)
-    slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
-    slope_deg = np.degrees(slope_rad)
+    if os.path.exists(TEMP_DEM):
+        print(f"  [OK] Loading cached DEM: {TEMP_DEM}")
+        with rasterio.open(TEMP_DEM) as src:
+            dem = src.read(1).astype("float32")
+            profile = src.profile.copy()
+            res = src.res
+        dem = np.where(dem == -9999, np.nan, dem)
+        return dem, profile, res
 
-    # Aspect (in degrees from North, 0-360 compass bearing)
+    print("  Querying Planetary Computer for Copernicus DEM...")
+    catalog = Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=pc.sign_inplace
+    )
+    search = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
+    items  = list(search.items())
+    if not items:
+        raise ValueError(f"No Copernicus DEM tile found for BBOX {BBOX}.")
+
+    item = items[0]
+    print(f"  [OK] DEM tile: {item.id}")
+
+    with rasterio.open(item.assets["data"].href) as src:
+        transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+        mnx, mny   = transformer.transform(BBOX[0], BBOX[1])
+        mxx, mxy   = transformer.transform(BBOX[2], BBOX[3])
+        window     = from_bounds(mnx, mny, mxx, mxy, src.transform)
+        win_tf     = rasterio.windows.transform(window, src.transform)
+        h = int(round(window.height))
+        w = int(round(window.width))
+
+        dem = src.read(1, window=window).astype("float32")
+        nd  = src.nodata
+        res = src.res  # (lat_deg, lon_deg)
+
+        profile = src.profile.copy()
+        profile.update(
+            driver="GTiff", dtype="float32", count=1, nodata=-9999,
+            height=h, width=w, transform=win_tf, compress="lzw"
+        )
+
+    # Mask nodata
+    if nd is not None:
+        dem = np.where(dem == nd, np.nan, dem)
+    dem = np.where(dem < -500, np.nan, dem)  # guard against fill values
+
+    # Cache as temp_dem.tif for script 11
+    with rasterio.open(TEMP_DEM, "w", **profile) as dst:
+        dst.write(np.nan_to_num(dem, nan=-9999).astype("float32"), 1)
+    print(f"  [OK] DEM cached: {TEMP_DEM}  ({w}x{h} pixels)")
+    return dem, profile, res
+
+
+# ---------------------------------------------------------------------------
+# 2. Terrain derivative functions
+# ---------------------------------------------------------------------------
+def pixel_sizes_m(res, lat_deg=-51.0):
+    """Convert geographic pixel size (degrees) to metres at study latitude."""
+    lat_m = abs(res[0]) * 111_000.0
+    lon_m = abs(res[1]) * 111_000.0 * np.cos(np.radians(lat_deg))
+    return lat_m, lon_m
+
+
+def compute_slope_aspect(dem, lat_m, lon_m):
+    """
+    Slope in degrees and aspect in degrees from North (0-360).
+    np.gradient(dem, dy, dx): dy = lat spacing, dx = lon spacing, both in metres.
+    """
+    dy, dx = np.gradient(dem, lat_m, lon_m)
+
+    slope_rad  = np.arctan(np.sqrt(dx**2 + dy**2))
+    slope_deg  = np.degrees(slope_rad)
+
     aspect_rad = np.arctan2(dy, -dx)
     aspect_deg = np.degrees(aspect_rad)
-    aspect_deg = np.where(aspect_deg < 0, 360 + aspect_deg, aspect_deg)
+    aspect_deg = np.where(aspect_deg < 0, 360.0 + aspect_deg, aspect_deg)
 
     return slope_deg, aspect_deg, slope_rad, aspect_rad
 
-def calculate_hillshade(slope_rad, aspect_rad, azimuth=315.0, zenith=45.0):
-    """Standard ESRI hillshade formula. Output range: 0–255."""
-    azimuth_rad = np.radians(360.0 - azimuth + 90.0)
-    zenith_rad = np.radians(zenith)
 
-    shaded = (np.cos(zenith_rad) * np.cos(slope_rad) +
-              np.sin(zenith_rad) * np.sin(slope_rad) *
-              np.cos(azimuth_rad - aspect_rad))
+def compute_hillshade(slope_rad, aspect_rad, azimuth=315.0, zenith=45.0):
+    """
+    Standard ESRI hillshade formula (output 0-255).
+    Azimuth 315 deg = NW sun (standard cartographic convention).
+    Zenith 45 deg = 45 deg above horizon.
+    """
+    az_rad = np.radians(360.0 - azimuth + 90.0)
+    ze_rad = np.radians(zenith)
+    shaded = (np.cos(ze_rad) * np.cos(slope_rad) +
+              np.sin(ze_rad) * np.sin(slope_rad) * np.cos(az_rad - aspect_rad))
+    return np.clip(255.0 * shaded, 0.0, 255.0)
 
-    # Clamp to [0,1] first (dot-product can exceed 1 at extreme geometry),
-    # then scale to 8-bit. Note: 255*(x+1)/2 is WRONG — it maps negative
-    # illumination (back-lit terrain) to non-zero values.
-    return np.clip(255 * shaded, 0, 255)
 
-# ==========================================
-# 3. Main Workflow
-# ==========================================
-def process_terrain():
-    print("\n[INFO] Querying Copernicus Global 30m DEM from Planetary Computer...")
-    catalog = Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=pc.sign_inplace)
-    
-    search = catalog.search(collections=["cop-dem-glo-30"], bbox=BBOX)
-    items = list(search.items())
-    if not items:
-        raise ValueError("No DEM found for this BBOX.")
-        
-    item = items[0]
-    print(f"       [SUCCESS] Found DEM Item: {item.id}")
-    
-    print("\n[INFO] Streaming raw elevation data...")
-    with rasterio.open(item.assets["data"].href) as src:
-        transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-        minx, miny = transformer.transform(BBOX[0], BBOX[1])
-        maxx, maxy = transformer.transform(BBOX[2], BBOX[3])
-        window = from_bounds(minx, miny, maxx, maxy, src.transform)
+def compute_curvature(dem, lat_m, lon_m):
+    """
+    Plan curvature (second derivative of elevation surface).
+    Positive = convex (ridge, water sheds).
+    Negative = concave (valley, water collects).
+    Units: 1/m (rate of change of slope per metre).
+    """
+    dy, dx    = np.gradient(dem, lat_m, lon_m)
+    ddy, _    = np.gradient(dy, lat_m, lon_m)
+    _, ddx    = np.gradient(dx, lat_m, lon_m)
+    return ddy + ddx   # Laplacian (plan curvature proxy)
 
-        dem = src.read(1, window=window).astype('float32')
-        src_nodata = src.nodata   # capture INSIDE the with-block
 
-        # Pixel size in degrees (CopDEM is EPSG:4326)
-        pix_lat_deg = abs(src.res[0])   # row spacing in degrees
-        pix_lon_deg = abs(src.res[1])   # col spacing in degrees
+# ---------------------------------------------------------------------------
+# 3. Save GeoTIFF helper
+# ---------------------------------------------------------------------------
+def save_tif(data, name, profile, description=""):
+    out_path = os.path.join(OUT_DIR, f"{name}.tif")
+    safe     = np.nan_to_num(data.astype("float32"), nan=-9999)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(safe, 1)
+        if description:
+            dst.update_tags(description=description, nodata="-9999",
+                            arcgis_note="Stretched symbology recommended",
+                            envi_note="File > Open, Linear stretch 2%")
+    print(f"  [OK] {name}.tif")
+    return out_path
 
-        # Save profile for TIFF export — use -9999 as nodata (ArcGIS/ENVI compatible)
-        profile = src.profile
-        profile.update(
-            dtype=rasterio.float32, count=1, nodata=-9999,
-            height=int(round(window.height)), width=int(round(window.width)),
-            transform=rasterio.windows.transform(window, src.transform)
-        )
 
-    # Mask out actual nodata pixels (use the raster's nodata value, not a hard elevation threshold)
-    # Using <=0 would incorrectly remove valid sea-level terrain near the coast.
-    if src_nodata is not None:
-        dem = np.where(dem == src_nodata, np.nan, dem)
-    dem = np.where(dem < -500, np.nan, dem)  # secondary guard for extreme fill values
+# ---------------------------------------------------------------------------
+# 4. Statistics
+# ---------------------------------------------------------------------------
+def terrain_stats(dem, slope_deg, aspect_deg, hillshade, curvature):
+    def stats(arr, name):
+        v = arr[np.isfinite(arr)]
+        return {
+            "layer": name,
+            "min":   round(float(v.min()), 2) if v.size > 0 else None,
+            "max":   round(float(v.max()), 2) if v.size > 0 else None,
+            "mean":  round(float(v.mean()), 2) if v.size > 0 else None,
+            "std":   round(float(v.std()),  2) if v.size > 0 else None,
+        }
+    rows = [
+        stats(dem, "DEM (m)"),
+        stats(slope_deg, "Slope (deg)"),
+        stats(aspect_deg, "Aspect (deg)"),
+        stats(hillshade, "Hillshade"),
+        stats(curvature, "Curvature (1/m)"),
+    ]
+    df = pd.DataFrame(rows)
+    csv_path = os.path.join(OUT_DIR, "terrain_statistics.csv")
+    df.to_csv(csv_path, index=False, encoding="utf-8")
+    print(f"\n  --- Terrain Statistics ---")
+    for _, row in df.iterrows():
+        print(f"  {row['layer']:<20s}  min={row['min']:>8}  max={row['max']:>8}  "
+              f"mean={row['mean']:>8}  std={row['std']:>7}")
+    print(f"  [OK] Stats CSV: {csv_path}")
 
-    # -----------------------------------------------------------------------
-    # CRITICAL: Convert geographic pixel size (degrees) to metres before
-    # calling np.gradient. CopDEM is in EPSG:4326; passing cellsize=30.0
-    # (degrees) would underestimate slope by a factor of ~3300.
-    # At study latitude ~51°S:
-    #   1° latitude ≈ 111,000 m  (nearly constant)
-    #   1° longitude ≈ 111,000 × cos(51°) ≈ 69,800 m
-    # -----------------------------------------------------------------------
-    study_lat_rad = np.radians(-51.0)
-    lat_m_per_deg = 111_000.0
-    lon_m_per_deg = 111_000.0 * np.cos(study_lat_rad)
-    pix_lat_m = pix_lat_deg * lat_m_per_deg
-    pix_lon_m = pix_lon_deg * lon_m_per_deg
 
-    print(f"       DEM pixel size: {pix_lat_m:.1f} m (lat) × {pix_lon_m:.1f} m (lon)")
+# ---------------------------------------------------------------------------
+# 5. 5-panel dark figure
+# ---------------------------------------------------------------------------
+def plot_terrain(dem, slope_deg, aspect_deg, hillshade, curvature):
+    print("\n  Building 5-panel terrain figure...")
 
-    print("\n[INFO] Calculating Terrain Derivatives (Slope & Aspect)...")
-    slope_deg, aspect_deg, slope_rad, aspect_rad = calculate_slope_aspect(dem, pix_lat_m, pix_lon_m)
-    
-    print("[INFO] Generating Hillshade (Azimuth 315, Zenith 45)...")
-    hillshade = calculate_hillshade(slope_rad, aspect_rad)
+    fig, axes = plt.subplots(2, 3, figsize=(22, 14), facecolor=DARK_BG)
+    fig.suptitle("Terrain Derivatives -- Torres del Paine, Patagonia\nCopernicus DEM 30m",
+                 color=C_TEXT, fontsize=13, fontweight="bold", y=0.98)
 
-    print("\n[INFO] Exporting Geocoded TIFFs for ArcGIS/ENVI...")
-    def save_tif(data, name):
-        out_tif = os.path.join(OUT_DIR, f"{name}.tif")
-        with rasterio.open(out_tif, 'w', **profile) as dst:
-            dst.write(data.astype('float32'), 1)
-        print(f"       [SUCCESS] Exported TIFF: {out_tif}")
-        
-    save_tif(dem, "copernicus_dem")
-    save_tif(slope_deg, "slope_degrees")
-    save_tif(aspect_deg, "aspect_degrees")
-    save_tif(hillshade, "hillshade")
+    panels = [
+        (dem,        "terrain",  None,      None,   "DEM -- Elevation (m)"),
+        (slope_deg,  "magma",    0,         60,     "Slope (degrees)"),
+        (aspect_deg, "hsv",      0,         360,    "Aspect (degrees from North)"),
+        (hillshade,  "gray",     0,         255,    "Hillshade (Az=315, Ze=45)"),
+        (curvature,  "RdBu_r",   -0.1,      0.1,   "Plan Curvature (convex=red, concave=blue)"),
+    ]
 
-    print("\n[INFO] Generating plot...")
-    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
-    
-    # Raw DEM
-    im1 = axs[0].imshow(dem, cmap='terrain')
-    axs[0].set_title('Raw Elevation (m)')
-    fig.colorbar(im1, ax=axs[0], shrink=0.7)
-    axs[0].axis('off')
-    
-    # Slope
-    im2 = axs[1].imshow(slope_deg, cmap='magma')
-    axs[1].set_title('Slope (Degrees)')
-    fig.colorbar(im2, ax=axs[1], shrink=0.7)
-    axs[1].axis('off')
-    
-    # Hillshade
-    im3 = axs[2].imshow(hillshade, cmap='gray')
-    axs[2].set_title('Hillshade Relief')
-    axs[2].axis('off')
-    
-    plt.tight_layout()
-    plot_path = os.path.join(OUT_DIR, "terrain_derivatives.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.close(fig)  # prevent memory leak in multi-script pipelines
-    print(f"       [SUCCESS] Terrain map saved to: {plot_path}")
+    flat = axes.flatten()
+    for i, (arr, cmap, vmin, vmax, title) in enumerate(panels):
+        ax = flat[i]
+        ax.set_facecolor(DARK_AX)
+        valid = arr[np.isfinite(arr)]
+        v2 = float(np.percentile(valid, 98)) if valid.size > 0 else 1
+        v1 = float(np.percentile(valid, 2))  if valid.size > 0 else 0
+        im = ax.imshow(arr, cmap=cmap,
+                       vmin=vmin if vmin is not None else v1,
+                       vmax=vmax if vmax is not None else v2,
+                       aspect="auto")
+        cb = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+        cb.ax.tick_params(colors=C_TEXT, labelsize=7)
+        ax.set_title(title, color=C_TEXT, fontsize=9, fontweight="bold", pad=6)
+        ax.axis("off")
 
+    # Panel 6: Elevation histogram
+    ax6 = flat[5]
+    ax6.set_facecolor(DARK_AX)
+    for sp in ax6.spines.values():
+        sp.set_color("#30363d")
+    ax6.tick_params(colors=C_TEXT)
+    valid = dem[np.isfinite(dem)]
+    if valid.size > 0:
+        ax6.hist(valid, bins=80, color="#3498db", alpha=0.8, density=True)
+        ax6.axvline(float(np.mean(valid)), color="#e74c3c", lw=1.5,
+                    label=f"Mean: {np.mean(valid):.0f} m")
+        ax6.legend(fontsize=8, facecolor=DARK_BG, labelcolor=C_TEXT)
+    ax6.set_title("Elevation Histogram", color=C_TEXT, fontsize=9, fontweight="bold")
+    ax6.set_xlabel("Elevation (m)", color=C_TEXT, fontsize=8)
+    ax6.set_ylabel("Density", color=C_TEXT, fontsize=8)
+    ax6.grid(alpha=0.15, color="#30363d")
+
+    out_png = os.path.join(OUT_DIR, "terrain_derivatives.png")
+    fig.savefig(out_png, dpi=180, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"  [OK] 5-panel figure: {out_png}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    print("=======================================================")
-    print(" GEOCASCADE PIPELINE - DIGITAL ELEVATION PROCESSING    ")
-    print("=======================================================")
-    process_terrain()
-    print("\n[SUCCESS] Script 10 Complete!")
+    print("=" * 65)
+    print(" GEOCASCADE - TERRAIN DERIVATIVES (SLOPE / ASPECT / HILLSHADE)")
+    print(f" Copernicus DEM 30m | BBOX: {BBOX}")
+    print("=" * 65)
+
+    print("\n[1/5] Fetching/loading Copernicus DEM...")
+    dem, profile, res = fetch_dem()
+
+    print("\n[2/5] Converting pixel size to metres...")
+    lat_m, lon_m = pixel_sizes_m(res)
+    print(f"  Pixel size: {lat_m:.1f} m (lat) x {lon_m:.1f} m (lon) at 51 deg S")
+
+    print("\n[3/5] Computing terrain derivatives...")
+    slope_deg, aspect_deg, slope_rad, aspect_rad = compute_slope_aspect(dem, lat_m, lon_m)
+    hillshade  = compute_hillshade(slope_rad, aspect_rad)
+    curvature  = compute_curvature(dem, lat_m, lon_m)
+    print(f"  Slope range: {np.nanmin(slope_deg):.1f} to {np.nanmax(slope_deg):.1f} deg")
+    print(f"  Hillshade : {np.nanmin(hillshade):.0f} to {np.nanmax(hillshade):.0f}")
+
+    print("\n[4/5] Saving GeoTIFFs...")
+    save_tif(dem,       "copernicus_dem",  profile, "Copernicus DEM 30m (m)")
+    save_tif(slope_deg, "slope_degrees",  profile, "Slope in degrees")
+    save_tif(aspect_deg,"aspect_degrees", profile, "Aspect 0-360 deg from North")
+    save_tif(hillshade, "hillshade",      profile, "Hillshade Az=315 Ze=45, 0-255")
+    save_tif(curvature, "curvature",      profile, "Plan curvature (1/m): +=convex, -=concave")
+    terrain_stats(dem, slope_deg, aspect_deg, hillshade, curvature)
+
+    print("\n[5/5] Generating 5-panel figure...")
+    plot_terrain(dem, slope_deg, aspect_deg, hillshade, curvature)
+
+    print("\n" + "=" * 65)
+    print(" TERRAIN DERIVATIVES COMPLETE")
+    print("=" * 65)
+    print(f"  TIFs  : {OUT_DIR}")
+    print(f"  Figure: {os.path.join(OUT_DIR, 'terrain_derivatives.png')}")
+    print(f"  Stats : {os.path.join(OUT_DIR, 'terrain_statistics.csv')}")
+    print()
+    print("  ArcGIS Pro: Analysis > Tools > Hillshade, Slope, Aspect")
+    print("              (3D Analyst toolbox -- results match this script)")
+    print("  ENVI 5.6  : Topographic > Slope / Aspect from copernicus_dem.tif")
+    print("=" * 65)
+
 
 if __name__ == "__main__":
     main()

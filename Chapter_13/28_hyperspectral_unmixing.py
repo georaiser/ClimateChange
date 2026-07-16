@@ -33,13 +33,17 @@ mamba install -n geocascade_env -c conda-forge rasterio numpy scipy matplotlib s
 """
 
 import os
+import sys
 import warnings
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 warnings.filterwarnings("ignore")
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 try:
     import rasterio
@@ -56,7 +60,7 @@ except ImportError:
     print("  mamba install -n geocascade_env -c conda-forge scipy -y")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR  = os.path.join(BASE_DIR, "data", "processed")
+OUT_DIR  = os.path.join(BASE_DIR, "data", "processed", "hyperspectral")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 ENDMEMBER_NAMES   = ["Glacier/Snow", "Open Water", "Dense Vegetation", "Bare Rock"]

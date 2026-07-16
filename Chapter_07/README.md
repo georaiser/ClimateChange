@@ -1,92 +1,215 @@
-# Chapter 7: SAR Processing & Cloud Penetration Analysis
+# 📡 Chapter 7: SAR Active Microwave Remote Sensing
 
-## Academic Objective
-Introduce Active Remote Sensing (SAR). Process both VV and VH polarization channels
-from Sentinel-1 RTC data, compute the VV/VH cross-polarization ratio as a surface
-discriminator, and demonstrate the all-weather advantage of SAR over optical sensors.
+> **GeoCascade Pipeline — Stage 7**
+> Sentinel-1 RTC SAR processing, multi-sensor comparison, and cloud-penetration demonstration.
 
 ---
 
-## Scripts
+## 📋 Overview
 
-### 18_sentinel1_sar_processing.py — Dual-Polarization SAR Analysis (MAJOR UPGRADE)
+Chapter 7 introduces **Active Remote Sensing** — the most powerful tool for operational environmental monitoring in cloud-dominated regions like Patagonia. Where optical sensors fail, SAR succeeds.
 
-**Previously:** VV only, 3-panel figure.
-**Now:** Both VV and VH polarizations + VV/VH ratio, 4-panel figure, area report.
-
-Physics:
-  sigma0_dB = 10 * log10(sigma0_linear)
-  VV/VH_ratio_dB = VV_dB - VH_dB
-
-| Polarization | Sensitivity |
-|---|---|
-| VV (Vertical-Vertical) | Surface roughness, soil moisture, water, ice |
-| VH (Vertical-Horizontal) | Volume scattering: vegetation canopy, forest structure |
-
-VV/VH Ratio interpretation:
-| Ratio | Surface Type |
-|---|---|
-| ~0 dB | Double-bounce: urban structures, rough ice crevasses |
-| >> 0 dB | Volume scattering: dense vegetation, forest |
-| << 0 dB | Specular surface: water, smooth ice lake |
-
-Thresholds:
-- Water mask: VV < -18 dB (specular reflection off smooth water)
-- Glacier mask: VV > -5 dB (volume/double-bounce from rough crevassed ice)
-
-**NEW Tier 3 — Quantitative Area Report:**
-Prints water_pixels and glacier_pixels with approximate km2 area.
-
-**Improvements:** read_pol() helper; VH polarization download; VV/VH ratio raster;
-nodata=-9999; int(round()) window; plt.close(); STAC guard.
-
-Run: `python 18_sentinel1_sar_processing.py`
-
-Outputs: sar_vv_linear.tif, sar_vv_db.tif, sar_vv_vh_ratio_db.tif, sar_dual_analysis.png
+| Script | Topic | Key Outputs |
+|--------|-------|-------------|
+| 18 | Sentinel-1 SAR: VV, VH, dual thresholding | 5 GeoTIFFs, `sar_statistics.csv`, 5-panel figure |
+| 19 | Multi-sensor review: L9 / MODIS / S1 | 3 GeoTIFFs, `multisensor_statistics.csv`, 4-panel figure |
+| 19b | Cloud penetration: SAR vs cloudy optical | `sar_vv_db.tif`, `cloud_comparison_stats.csv`, 4-panel figure |
 
 ---
 
-### 19_multisensor_review.py — Multi-Temporal SAR Review
-
-Multi-temporal SAR comparison script showing backscatter changes over time.
-
-Run: `python 19_multisensor_review.py`
-
----
-
-### 19b_cloud_penetration_comparison.py — SAR vs Optical (NEW Tier 4)
-
-Demonstrates the cloud penetration advantage of SAR by deliberately selecting
-a CLOUDY winter Sentinel-2 scene alongside the SAR acquisition from the same week.
-
-The 3-panel comparison shows:
-1. SAR VV (always clear — cloud-independent)
-2. Sentinel-2 true color (cloud-obscured, picked from winter high-cloud season)
-3. VV/VH ratio (structural discriminator: vegetation / soil / water)
-
-Strategy: picks the CLOUDIEST available scene (sorted by cloud cover descending)
-to maximize the demonstration of optical sensor limitations.
-
-Run: `python 19b_cloud_penetration_comparison.py`
-
-Outputs: sar_vs_optical_cloudy.png
-
----
-
-## Key Concepts
-
-| Concept | Explanation |
-|---|---|
-| Active vs Passive | SAR transmits its own microwave pulse; optical sensors use sunlight |
-| Cloud Penetration | Microwaves (3-25cm) pass through clouds, rain, and darkness |
-| RTC | Radiometric Terrain Correction — removes terrain-induced SAR distortions |
-| VV polarization | Sensitive to surface roughness and smooth water surfaces |
-| VH polarization | Sensitive to volume scattering from vegetation canopy |
-| VV/VH ratio | Surface type discriminator: forest vs water vs ice |
-| dB scale | Compresses the dynamic range of radar backscatter for visualization |
-
-## Installation
+## 🚀 Setup
 
 ```bash
-mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer rasterio numpy matplotlib pyproj -y
+conda activate geocascade_env
+
+mamba install -n geocascade_env -c conda-forge \
+    rasterio numpy matplotlib pandas \
+    pystac-client planetary-computer pyproj -y
 ```
+
+---
+
+## ▶️ Run Order
+
+```bash
+# Step 1: Full Sentinel-1 SAR processing (VV, VH, masks, cross-ratio)
+python Chapter_07/18_sentinel1_sar_processing.py
+
+# Step 2: Multi-sensor comparison (Landsat 9 / MODIS / Sentinel-1)
+python Chapter_07/19_multisensor_review.py
+
+# Step 3: Cloud penetration demonstration (SAR vs winter cloudy optical)
+python Chapter_07/19b_cloud_penetration_comparison.py
+```
+
+---
+
+## 🔬 Methods Deep-Dive
+
+### SAR Physics
+
+**Why SAR for Patagonia?**
+Torres del Paine records cloud cover >80% of the time. Optical satellites (Sentinel-2, Landsat) require cloud-free conditions and daylight. SAR:
+- Transmits its own C-band pulse (5.405 GHz, λ = 5.6 cm)
+- Completely cloud-independent — images day/night, any weather
+- Detects surface ROUGHNESS and DIELECTRIC properties
+
+**Polarization channels:**
+
+| Channel | Physical Mechanism | Sensitive To |
+|---------|-------------------|--------------|
+| VV | Specular/surface scattering | Water bodies, smooth ice, soil moisture |
+| VH | Volume scattering (cross-pol) | Vegetation canopy, forest structure |
+
+**dB conversion (applied every time):**
+```python
+# Raw RTC product = linear amplitude (gamma0 normalized)
+# Negative or zero values = invalid (no physical backscatter)
+vv_db = 10 * np.log10(np.where(vv_linear > 0, vv_linear, np.nan))
+```
+
+**Dual-threshold classification (Script 18):**
+
+| Threshold | Meaning | Land Cover |
+|-----------|---------|-----------|
+| VV < -18 dB | Very low backscatter = specular | Flat water / calm lake |
+| VV > -5 dB | High backscatter = rough/angular | Glacier crevasses / rocky terrain |
+| VH/VV high | Strong depolarization | Dense forest canopy |
+
+**Cross-ratio (CR = VH/VV linear):**
+```python
+cr = vh_linear / vv_linear   # dimensionless [0-1]
+# CR > 0.35 → vegetation canopy (strong volume scattering)
+# CR ~ 0.0  → bare surface / water (no depolarization)
+```
+
+> [!IMPORTANT]
+> The RTC (Radiometrically Terrain Corrected) data on Planetary Computer already has terrain effects removed using the Copernicus DEM. Do NOT apply additional terrain correction.
+
+---
+
+### Multi-Sensor Scale Factors (Script 19)
+
+**Landsat C2-L2 Surface Reflectance (Band 1–7):**
+```python
+# Fill value = 0 → mask BEFORE applying scale
+fill_mask = arr == 0
+sr = arr * 0.0000275 - 0.2
+sr = np.where(fill_mask, np.nan, sr)
+sr = np.clip(sr, 0, 1)   # valid reflectance range
+```
+
+**MODIS LST (modis-11A1-061):**
+```python
+# Fill value = 0 → mask BEFORE scaling (NOT DN < 7500!)
+fill_mask = arr == 0
+lst_k = arr * 0.02         # → Kelvin
+lst_c = lst_k - 273.15     # → Celsius
+lst_c = np.where(fill_mask | (lst_k < 150), np.nan, lst_c)
+```
+
+> [!WARNING]
+> A common error is masking MODIS with `DN < 7500`. The correct fill for `modis-11A1-061` on Planetary Computer is `DN == 0`. Using `< 7500` discards valid cold pixels (glaciers, snow).
+
+---
+
+### Cloud Penetration Comparison (Script 19b)
+
+Script 19b deliberately selects the **cloudiest** available Sentinel-2 scene from June-August (Patagonian winter peak) and the nearest Sentinel-1 acquisition:
+
+```python
+# Optical: pick cloudiest for maximum demonstration
+item = sorted(items, key=lambda i: i.properties.get("eo:cloud_cover", 0),
+              reverse=True)[0]   # HIGHEST cloud cover wins
+
+# SAR: any winter acquisition — always cloud-free by physics
+item = items[0]   # any SAR scene is cloud-penetrating
+```
+
+The comparison proves the operational advantage: SAR can distinguish water/glacier structure even when optical is 100% obscured.
+
+---
+
+## 📂 Output Structure
+
+```
+Chapter_07/
+└── data/processed/
+    ├── sar/
+    │   ├── sar_vv_linear.tif          ← raw gamma0 backscatter
+    │   ├── sar_vv_db.tif              ← VV in decibels
+    │   ├── sar_vh_db.tif              ← VH in decibels
+    │   ├── sar_vv_vh_ratio_db.tif     ← VV-VH ratio (dB)
+    │   ├── sar_cr.tif                 ← cross-ratio VH/VV (linear)
+    │   ├── water_mask_sar.tif         ← binary water mask
+    │   ├── glacier_mask_sar.tif       ← binary glacier/rough mask
+    │   └── sar_statistics.csv
+    ├── multisensor/
+    │   ├── landsat9_nir.tif
+    │   ├── modis_lst_celsius.tif
+    │   ├── sentinel1_vv_db.tif
+    │   ├── multisensor_statistics.csv
+    │   └── multisensor_comparison.png
+    └── cloud_comparison/
+        ├── sar_vv_db.tif
+        ├── cloud_comparison_stats.csv
+        └── sar_vs_optical_cloudy.png
+```
+
+---
+
+## 🖥️ ArcGIS Pro Integration
+
+```
+Script 18:
+  Add sar_vv_db.tif → Symbology > Stretched > Gray (0 to -25 dB range)
+  Raster Calculator: Con("sar_vv_db.tif" < -18, 1, 0) → water binary mask
+  Raster Calculator: Con("sar_vv_db.tif" > -5, 1, 0)  → glacier binary mask
+
+Script 19:
+  Split View (View > Linked Views): show L9 and SAR side by side
+  Use same BBOX to prove cloud cover difference
+
+Script 19b:
+  Toggle: add sar_vv_db.tif and Sentinel-2 cloud scene as two layers
+  Adjust layer transparency (0-100%) to show SAR reveals ice structure
+  that optical cannot see
+```
+
+---
+
+## 🔵 ENVI 5.6 Integration
+
+```
+; Open SAR VV dB
+File > Open > sar_vv_db.tif
+Display > Density Slice
+  Add break points: -18 dB (water), -5 dB (glacier)
+
+; Cross-polarization ratio
+File > Open > sar_cr.tif
+Toolbox > Thematic > Threshold Value: 0.35 for vegetation mask
+
+; Compare with optical
+Display > Animation
+  Load sar_vv_db.tif, then landsat9_nir.tif — toggle to compare
+```
+
+---
+
+## ⚠️ Common Issues
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| No Sentinel-1 found | Winter data gap or STAC outage | Script widens to full-year search as fallback |
+| All SAR values NaN | VV linear ≤ 0 before log | Fixed: `np.where(arr > 0, arr, np.nan)` before log |
+| MODIS all NaN | Wrong fill threshold | Use `fill_mask = arr == 0`, not `arr < 7500` |
+| Landsat very dark | Missing scale factor | Apply `DN * 0.0000275 - 0.2` before visualization |
+
+---
+
+## 📖 Key References
+
+- Ulaby, F.T. et al. (2014). *Microwave Radar and Radiometric Remote Sensing.* University of Michigan Press.
+- Torres, R. et al. (2012). *GMES Sentinel-1 mission.* Remote Sensing of Environment.
+- Nagler, T. et al. (2016). *The Sentinel-1 Mission: New Opportunities for Ice Sheet Observations.* Remote Sensing.

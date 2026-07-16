@@ -33,6 +33,9 @@ import requests
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import sys
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
@@ -43,6 +46,8 @@ from pyproj import Transformer
 from sklearn.preprocessing import MinMaxScaler
 from pystac_client import Client
 import planetary_computer as pc
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")

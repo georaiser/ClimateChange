@@ -35,6 +35,9 @@ mamba install -n geocascade_env -c conda-forge pystac-client planetary-computer
 import os
 import warnings
 import numpy as np
+import sys
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import geopandas as gpd
@@ -48,6 +51,8 @@ from shapely.geometry import box
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ==========================================
 # 1. Configuration
