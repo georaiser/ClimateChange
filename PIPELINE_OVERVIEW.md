@@ -25,15 +25,15 @@ GeoCascade is a full-stack geospatial analysis pipeline that combines satellite 
 | [Chapter 2](#chapter-2--spectral-analysis--vegetation-indices) | Spectral Analysis & Vegetation Indices | ✅ Complete |
 | [Chapter 3](#chapter-3--terrain--glacier-analysis) | Terrain & Glacier Analysis | ✅ Complete |
 | [Chapter 4](#chapter-4--ecological--vulnerability-analysis) | Ecological & Vulnerability Analysis | ✅ Complete |
-| [Chapter 5](#chapter-5--moisture-zonal-statistics) | Moisture & Zonal Statistics | 🔄 In Progress |
-| [Chapter 6](#chapter-6--isohyets-drainage-density) | Isohyets & Drainage Density | 🔄 In Progress |
-| [Chapter 7](#chapter-7--sar--multisensor-analysis) | SAR & Multisensor Analysis | 🔄 In Progress |
-| [Chapter 8](#chapter-8--data-fusion--cascade-risk) | Data Fusion & Cascade Risk Modeling | 🔄 In Progress |
-| [Chapter 9](#chapter-9--deep-learning-land-cover) | Deep Learning Land Cover (PyTorch) | 📋 Planned |
-| [Chapter 10](#chapter-10--agentic-orchestration) | Agentic Orchestration (LangGraph) | 📋 Planned |
-| [Chapter 11](#chapter-11--enterprise-spatial-databases) | Enterprise Spatial Databases (PostGIS) | 📋 Planned |
-| [Chapter 12](#chapter-12--capstone) | Capstone — Full Pipeline Integration | 📋 Planned |
-| [Chapter 13-14](#chapter-13-14--advanced-capstone--rest-api) | Advanced Capstone — Geospatial REST API | 📋 Planned |
+| [Chapter 5](#chapter-5--moisture-zonal-statistics) | Moisture & Zonal Statistics | ✅ Complete |
+| [Chapter 6](#chapter-6--isohyets-drainage-density) | Isohyets & Drainage Density | ✅ Complete |
+| [Chapter 7](#chapter-7--sar--multisensor-analysis) | SAR & Multisensor Analysis | ✅ Complete |
+| [Chapter 8](#chapter-8--data-fusion--cascade-risk) | Data Fusion & Cascade Risk Modeling | ✅ Complete |
+| [Chapter 9](#chapter-9--deep-learning-land-cover) | Deep Learning Land Cover (PyTorch) | ✅ Complete |
+| [Chapter 10](#chapter-10--agentic-orchestration) | Agentic Environmental Monitoring | ✅ Complete |
+| [Chapter 11](#chapter-11--enterprise-spatial-databases) | Enterprise Spatial Databases (PostGIS) | ✅ Complete |
+| [Chapter 12](#chapter-12--capstone) | Capstone — Full Pipeline Integration | ✅ Complete |
+| [Chapter 13](#chapter-13--advanced-techniques) | Advanced — InSAR Velocity & Hyperspectral Unmixing | ✅ Complete |
 
 ---
 
@@ -125,107 +125,111 @@ All fallback to Planetary Computer STAC streaming if local files not found.
 
 ### Chapter 5 — Moisture & Zonal Statistics
 
-**`Chapter_05/`** | 2 scripts
+**`Chapter_05/`** | 2 scripts | All updated July 2026
 
 | Script | Description | Key Outputs |
 |--------|-------------|-------------|
-| `14_moisture_stress_indices.py` | Computes multi-scale moisture stress indicators from Sentinel-2 SWIR bands (NDMI, NMDI) and ERA5 evapotranspiration. Combines into a Composite Drought Indicator (CDI). | `moisture_stress.tif`, `drought_composite.png` |
-| `15_zonal_statistics.py` | Overlays all raster indices (NDVI, CVI, SDM, LST) against watershed polygons from script 11 to compute per-basin statistics: mean, std, min, max, percentiles. Outputs summary table for cross-chapter comparison. | `zonal_statistics_summary.csv`, `zonal_statistics.png` |
+| `14_moisture_stress_indices.py` | Computes NDMI and MSI from Sentinel-2 NIR (B08) and SWIR1 (B11). **Critical fix:** B11 uses its own independently computed window and transformer — it cannot reuse the NIR window because B11 is natively 20m with a different transform. Higher NDMI = more moisture; higher MSI = more drought stress. | `moisture_stress/ndmi.tif`, `moisture_stress/msi.tif`, `moisture_stress/moisture_comparison.png`, `moisture_statistics.csv` |
+| `15_zonal_statistics.py` | Generates 4 vector polygons (NW/NE/SW/SE quadrants) and runs `rasterstats.zonal_stats` with `nodata=-9999`. Computes mean, std, min, max per zone for NDVI, DEM, and slope. None-safe formatter guards zones fully covered by NoData. | `zonal_statistics/quadrant_zones.gpkg`, `zonal_summary.csv`, `zonal_statistics_panel.png` |
 
 ---
 
 ### Chapter 6 — Isohyets & Drainage Density
 
-**`Chapter_06/`** | 2 scripts
+**`Chapter_06/`** | 2 scripts | All updated July 2026
 
 | Script | Description | Key Outputs |
 |--------|-------------|-------------|
-| `16_isohyets_isotherms.py` | Generates isohyet (equal rainfall) and isotherm (equal temperature) contour maps by interpolating point measurements with scipy RBF or kriging. Exports contours as GeoJSON for ArcGIS Pro. | `isohyets.geojson`, `isotherms.geojson`, `isohyet_map.png` |
-| `17_drainage_density.py` | Computes drainage density (total stream length / basin area) from the river network produced by script 11. Higher drainage density = flashier catchment with rapid storm response. | `drainage_density.tif`, `drainage_density_report.csv` |
+| `16_isohyets_isotherms.py` | Generates temperature isolines using the Environmental Lapse Rate (−6.5°C/1000m). **Critical fix 1:** `src.crs` captured as `raster_crs` inside the `with` block — accessing it outside causes silent errors. **Critical fix 2:** `to_polygons(closed_only=False)` — isotherms are open LineStrings, not closed polygons. Exports isolines as GeoJSON. | `isotherms/isotherms.geojson`, `isotherms/lapse_rate_map.tif`, `isotherm_dashboard.png` |
+| `17_drainage_density.py` | Downloads DEM, runs full pysheds D8 workflow, extracts river network as GeoDataFrame, calculates drainage density `Dd = L_total / A_basin` (km/km²). Higher Dd = flashier catchment with rapid storm response. | `drainage/river_network.gpkg`, `drainage_density.tif`, `drainage_density_report.csv`, `drainage_dashboard.png` |
 
 ---
 
 ### Chapter 7 — SAR & Multisensor Analysis
 
-**`Chapter_07/`** | 3 scripts
+**`Chapter_07/`** | 3 scripts | All updated July 2026
 
 | Script | Description | Key Outputs |
 |--------|-------------|-------------|
-| `18_sentinel1_sar_processing.py` | Processes Sentinel-1 GRD SAR imagery (VV/VH polarizations). Converts to backscatter (dB), applies speckle filtering (Lee filter), and computes VH/VV ratio for surface roughness mapping. SAR penetrates cloud cover — critical for Patagonia. | `sar_vv.tif`, `sar_vh.tif`, `sar_ratio.tif`, `sar_processing.png` |
-| `19_multisensor_review.py` | Qualitative comparison of Sentinel-2 optical vs Sentinel-1 SAR for the same BBOX and date. Side-by-side visualization of what each sensor "sees" through clouds. | `multisensor_comparison.png` |
-| `19b_cloud_penetration_comparison.py` | Quantitative analysis: masks cloudy pixels in Sentinel-2, then shows SAR-derived surface reflectance estimate in the same pixels. Demonstrates SAR's cloud-penetration advantage. | `cloud_penetration_analysis.png`, `cloud_coverage_stats.csv` |
+| `18_sentinel1_sar_processing.py` | Downloads Sentinel-1 RTC VV and VH polarizations. Converts to dB backscatter (`σ₀_dB = 10 × log₁₀(σ₀_linear)`). Computes cross-polarization ratio (VH/VV). Applies dual thresholds: VV < −18 dB = water; VV > −5 dB = glacier/rough ice. 5-panel dark figure. | `sar/sar_vv_db.tif`, `sar_vh_db.tif`, `sar_cr.tif`, `water_mask_sar.tif`, `glacier_mask_sar.tif`, `sar_statistics.csv` |
+| `19_multisensor_review.py` | Side-by-side comparison of Landsat 9 NIR, MODIS LST (°C), and Sentinel-1 VV for the same BBOX. **Critical fix:** MODIS fill = DN==0 (not DN < 7500). Landsat C2-L2 scale factor applied. 4-panel dark figure with sensor matrix table. | `multisensor/landsat9_nir.tif`, `modis_lst_celsius.tif`, `sentinel1_vv_db.tif`, `multisensor_statistics.csv` |
+| `19b_cloud_penetration_comparison.py` | Deliberately selects the cloudiest available winter Sentinel-2 scene and the nearest Sentinel-1 acquisition. Proves SAR's all-weather advantage: ice structure visible through 100% cloud cover. | `cloud_comparison/sar_vv_db.tif`, `cloud_comparison_stats.csv`, `sar_vs_optical_cloudy.png` |
 
 ---
 
 ### Chapter 8 — Data Fusion & Cascade Risk Modeling
 
-**`Chapter_08/`** | 4 scripts
+**`Chapter_08/`** | 4 scripts | All updated July 2026
 
 | Script | Description | Key Outputs |
 |--------|-------------|-------------|
-| `20_multisensor_data_fusion.py` | Pixel-level fusion of Sentinel-2 optical, Sentinel-1 SAR, and Copernicus DEM into a single multi-band composite for classification. Uses weighted band combination and PCA for dimensionality reduction. | `fused_composite.tif`, `pca_components.tif` |
-| `21_cascade_risk_modeling.py` | Combines glacier retreat rate, slope, flow accumulation, and vegetation cover into a Glacial Lake Outburst Flood (GLOF) risk index. Identifies pixels at risk of ice-dammed lake failure. | `glof_risk_index.tif`, `cascade_risk_report.csv` |
-| `22_combined_insights_engine.py` | Master insight generator. Reads all processed outputs from Chapters 1–7, computes cross-variable correlations, and generates a comprehensive statistical report. | `combined_insights_report.md`, `correlation_matrix.png` |
-| `23_real_data_convergence.py` | Validation script. Cross-checks model predictions against in-situ station measurements and known glacier extents from the GLIMS database. Computes RMSE and bias metrics. | `validation_report.csv`, `convergence_plot.png` |
+| `20_multisensor_data_fusion.py` | Fuses 4 sensors (S2 NIR, S1 SAR VV, CopDEM, MODIS LST) onto a single 10m master grid via `rasterio.warp.reproject`. Uses local Ch02/Ch03/Ch07 cache before STAC download. Writes a self-documenting 4-band GeoTIFF with band descriptions. | `fusion/cascade_master_stack.tif`, `fusion_statistics.csv`, `data_cube_visualization.png` |
+| `21_cascade_risk_modeling.py` | Random Forest (150 trees) trained on 4-band cube using physics-based percentile labels. Outputs 4-class land cover map + continuous glacier probability map. 4-panel dark figure with donut chart and feature importance bars. | `ml/cascade_ml_prediction.tif`, `glacier_probability_map.tif`, `feature_importance.csv`, `classification_report.csv` |
+| `22_combined_insights_engine.py` | Convergent Evidence Analysis computing ESI (Ecological Stress Index), CVS (Cryosphere Vulnerability Score), and HECI (Human-Environment Conflict Index). | `combined_insights/esi_ecological_stress.tif`, `cvs_cryosphere_vulnerability.tif`, `heci_human_conflict.tif` |
+| `23_real_data_convergence.py` | Full multi-source dashboard integrating ERA5, CHIRPS, 7-station network, Sentinel-2 NDVI, Sentinel-1 SAR, CopDEM, and RGI 7.0 glacier outlines. | `convergence/environmental_stress_composite.tif`, `convergence_dashboard.png`, `convergence_report.csv` |
 
 ---
 
 ### Chapter 9 — Deep Learning Land Cover
 
-**`Chapter_09/`** | 1 script | 📋 Planned
+**`Chapter_09/`** | 1 script | ✅ Complete (July 2026)
 
-| Script | Description |
-|--------|-------------|
-| `24_deep_learning_landcover.py` | Multi-task deep learning with a shared ResNet-50 backbone: (1) semantic land cover segmentation head, (2) change detection head. Trained on 256×256 Sentinel-2 patches. Exported to ONNX for production inference. |
+| Script | Description | Key Outputs |
+|--------|-------------|-------------|
+| `24_deep_learning_landcover.py` | 3-layer ConvNet trained on 32×32 multi-sensor patches from the Ch08 data cube. Reads `fusion/cascade_master_stack.tif` (fallback: legacy path). Labels generated dynamically from geophysical percentiles (same physics as Ch08 RF). Full sliding-window inference produces spatially-aware classification with confidence map. Exports training history and per-class metrics CSVs. | `dl/cnn_landcover_prediction.tif`, `cnn_confidence_map.tif`, `cnn_training_history.csv`, `cnn_class_metrics.csv`, `cnn_landcover_results.png` |
 
-**Install:** `mamba install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia`
+**Architecture:** Conv(4→32)+BN+ReLU+MaxPool → Conv(32→64)+BN+ReLU+MaxPool → Conv(64→128)+BN+ReLU+MaxPool → FC(2048→256, Dropout 0.3) → FC(256→3)
+
+**Install:** `mamba install -n geocascade_env -c conda-forge pytorch torchvision cpuonly -y`
 
 ---
 
-### Chapter 10 — Agentic Orchestration
+### Chapter 10 — Agentic Environmental Monitoring
 
-**`Chapter_10/`** | 1 script | 📋 Planned
+**`Chapter_10/`** | 1 script | ✅ Complete (July 2026)
 
-| Script | Description |
-|--------|-------------|
-| `25_agentic_monitor.py` | LangGraph stateful agent that autonomously runs the GeoCascade pipeline when asked a natural-language question ("analyze glacial flood risk near [location]"). Has STAC query, NDVI calculator, SAR processor, and report generator tools. Human-in-the-loop pause before expensive API calls. |
+| Script | Description | Key Outputs |
+|--------|-------------|-------------|
+| `25_agentic_monitor.py` | Rule-based TriggerEngine (no LLM required) that independently evaluates 6 geophysical triggers: temperature anomaly (ERA5 > mean+2σ), drought stress (NDVI < 0.2 for 3+ scenes), precipitation deficit (30-day < 20th pct), SAR glacier change (Δ > 3 dB), wind extreme (> 95th pct), snow melt anomaly. Raises CONVERGENT ALERT when ≥ 3 triggers fire simultaneously. | `monitor_alerts.json`, `trigger_status.csv`, `trigger_dashboard.png` |
 
-**Install:** `pip install langgraph langchain langchain-google-genai`
+**Install:** `mamba install -n geocascade_env -c conda-forge numpy pandas matplotlib -y`
 
 ---
 
 ### Chapter 11 — Enterprise Spatial Databases
 
-**`Chapter_11/`** | 1 script | 📋 Planned
+**`Chapter_11/`** | 1 script | ✅ Complete (July 2026)
 
-| Script | Description |
-|--------|-------------|
-| `26_postgis_integration.py` | Loads all Chapter 8 vector and raster outputs into PostGIS (PostgreSQL spatial extension). Demonstrates spatial SQL: `ST_DWithin` for buffer queries, `ST_Value` for raster sampling, `pg_tileserv` for vector tile serving. |
+| Script | Description | Key Outputs |
+|--------|-------------|-------------|
+| `26_postgis_integration.py` | Loads Ch04 CVI raster, Ch05 zonal stats GeoDataFrame, and Ch01 RGI glacier outlines into PostGIS (or SpatiaLite fallback — always works). Demonstrates 3 spatial SQL queries: vulnerability zone filter, glacier 1km buffer intersection (ST_DWithin with `::geography` cast), and mean CVI per watershed (ST_Within join). Generates FastAPI REST stub. | `vulnerability_zones.geojson`, `glacier_buffer_intersections.geojson`, `watershed_aggregates.csv`, `postgis_integration_dashboard.png` |
 
-**Docker:** `docker run -d --name geocascade-postgis -p 5432:5432 postgis/postgis:16-3.4`
+**Docker:** `docker run -d --name geocascade-postgis -e POSTGRES_DB=geocascade -e POSTGRES_USER=geo -e POSTGRES_PASSWORD=cascade2024 -p 5432:5432 postgis/postgis:16-3.4`
+
+> Script runs without PostgreSQL — SpatiaLite fallback is auto-detected.
 
 ---
 
 ### Chapter 12 — Capstone
 
-**`Chapter_12/`** | 1 script | 📋 Planned
+**`Chapter_12/`** | 1 script | ✅ Complete (July 2026)
 
-| Script | Description |
-|--------|-------------|
-| `capstone_pipeline.py` | Full end-to-end pipeline runner. Executes all chapters in sequence with progress logging, error recovery, and a final 12-panel report dashboard exported as PDF. |
+| Script | Description | Key Outputs |
+|--------|-------------|-------------|
+| `capstone_pipeline.py` | Full argparse CLI pipeline. Accepts `--bbox`, `--date_range`, `--buffer_m`. Resolves rasters from local cache chain (Ch02→Ch03→Ch07) before STAC download. Downloads OSMnx road network (named kwargs only), projects to EPSG:32719 for accurate UTM buffers, saves GeoPackage. Runs `rasterstats.zonal_stats` via MemoryFile. Builds 5-panel dark dashboard and auto-generates Markdown site analysis report. | `capstone/ndvi_capstone.tif`, `sar_vv_db_capstone.tif`, `dem_capstone.tif`, `roads_buffer.gpkg`, `capstone_zonal_stats.csv`, `capstone_dashboard.png`, `site_analysis_report.md` |
+
+**Usage:** `python Chapter_12/capstone_pipeline.py --bbox -73.30 -51.10 -72.90 -50.80`
 
 ---
 
-### Chapter 13-14 — Advanced Capstone: REST API
+### Chapter 13 — Advanced Techniques
 
-**`Chapter_13_14/`** | Planned
+**`Chapter_13/`** | 2 scripts | ✅ Complete (July 2026)
 
-| Component | Description |
-|-----------|-------------|
-| `api.py` | FastAPI async REST API wrapping the full GeoCascade pipeline. Endpoints: `POST /analyze` (accepts GeoJSON bbox + date range), `GET /results/{job_id}`, `GET /health`. GeoJSON response format. Swagger UI at `/docs`. |
-| `Dockerfile` | Containerizes the full pipeline for cloud deployment. |
-
-**Run:** `uvicorn api:app --host 0.0.0.0 --port 8000 --reload`
+| Script | Description | Key Outputs |
+|--------|-------------|-------------|
+| `27_insar_glacier_velocity.py` | SAR Intensity Cross-Correlation (Offset Tracking) — the Python-native alternative to full InSAR. Correlates two Sentinel-1 VV intensity images separated in time. Peak of correlation window = displacement vector. Velocity = displacement × pixel_size × (365 / time_delta). Valid for Grey Glacier (300–800 m/year). Falls back to synthetic pair if only one SAR scene available. | `insar/vx_map.tif`, `vy_map.tif`, `vmag_map.tif`, `velocity_statistics.csv`, `insar_velocity_dashboard.png` |
+| `28_hyperspectral_unmixing.py` | Linear Spectral Unmixing (FCLS) decomposes each Sentinel-2 pixel into fractional abundances of 4 endmembers: Glacier/Snow, Open Water, Dense Vegetation, Bare Rock. Solved with `scipy.optimize.nnls` + sum-to-one constraint. Reveals sub-pixel heterogeneity invisible to classification. | `hyperspectral/abundance_glacier.tif`, `abundance_water.tif`, `abundance_vegetation.tif`, `abundance_rock.tif`, `endmember_spectra.csv`, `abundance_statistics.csv`, `spectral_unmixing_results.png` |
 
 ---
 
@@ -295,4 +299,4 @@ pip install fastapi uvicorn pydantic
 
 ---
 
-*Last updated: July 2026 | GeoCascade Pipeline v2.0*
+*Last updated: July 2026 | GeoCascade Pipeline v3.0 — All 13 chapters complete*
