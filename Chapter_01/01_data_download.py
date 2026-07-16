@@ -112,16 +112,22 @@ ERA5_DAILY_VARS = ",".join([
 
 # ---------------------------------------------------------------------------
 # Stations  (lat, lon, name, ghcn_id)
+# GHCND IDs verified via:
+#   GET /cdo-web/api/v2/stations?datasetid=GHCND&extent=-55,-75,-44,-68
+# CHM-prefix IDs do not exist in GHCND — real Chilean stations use CI prefix.
 # ---------------------------------------------------------------------------
 STATIONS = [
-    (-53.163, -70.917, "Punta_Arenas",              "CHM00085442"),
-    (-51.733, -72.533, "Puerto_Natales",             "CHM00085765"),
-    (-45.917, -71.700, "Balmaceda",                  "CHM00085585"),
-    (-47.250, -72.583, "Cochrane",                   "CHM00085629"),
+    # Real GHCND stations — CI = Chile, AR = Argentina
+    (-53.000, -70.967, "Punta_Arenas",              "CI000085934"),   # GHCND:CI000085934
+    (-45.917, -71.700, "Balmaceda",                  "CI000085874"),   # GHCND:CI000085874
+    (-45.594, -72.106, "Teniente_Vidal_Coyhaique",  "CIM00085864"),   # GHCND:CIM00085864
+    (-50.267, -72.050, "El_Calafate",               "ARM00087904"),   # GHCND:ARM00087904  (closest to study area)
+    (-51.617, -69.283, "Rio_Gallegos",              "AR000087925"),   # GHCND:AR000087925
+    # Virtual stations — no GHCND data, use Open-Meteo ERA5 reanalysis
     (-51.050, -73.100, "Grey_Glacier_virtual",       None),
     (-50.940, -72.990, "Torres_del_Paine_virtual",   None),
-    (-50.980, -73.080, "Lago_Grey_virtual",          None),
 ]
+
 
 OPEN_METEO_STATION_URL = (
     "https://archive-api.open-meteo.com/v1/archive"
@@ -274,28 +280,72 @@ def download_chirps():
 # 3. GHCN stations (NOAA API + Open-Meteo fallback)
 # ===========================================================================
 def _fetch_ghcn_noaa(ghcn_id, token):
-    """Fetch annual summaries from NOAA CDO API."""
-    url = "https://www.ncdc.noaa.gov/cdo-web/api/v2/data"
+    """Fetch daily summaries from NOAA CDO API, paginating year-by-year.
+
+    Key fixes vs original:
+    - URL: ncei.noaa.gov (ncdc.noaa.gov deprecated 2024)
+    - NO datatypeid filter: CDO returns empty if ANY requested type is
+      absent at a station. Chilean CHM stations often lack AWND. Accept
+      all types and filter client-side.
+    - Offset pagination: CDO cap is 1000 rows per call. Loop with
+      offset until all records retrieved.
+    """
+    url     = "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
     headers = {"token": token}
-    params  = {
-        "datasetid":  "GHCND",
-        "stationid":  f"GHCND:{ghcn_id}",
-        "startdate":  "2010-01-01",
-        "enddate":    "2023-12-31",
-        "datatypeid": "TMAX,TMIN,PRCP,AWND",
-        "limit":      1000,
-        "units":      "metric",
-    }
-    try:
-        resp = get_with_retry(url, params=params, headers=headers, timeout=30)
-        data = resp.json().get("results", [])
-        if not data:
-            return None
-        df = pd.DataFrame(data)
-        return df
-    except Exception as exc:
-        print(f"    NOAA API error: {exc}")
+    frames  = []
+
+    for year in range(2010, 2024):
+        offset = 1          # CDO uses 1-based offset
+        while True:
+            params = {
+                "datasetid": "GHCND",
+                "stationid": f"GHCND:{ghcn_id}",
+                "startdate": f"{year}-01-01",
+                "enddate":   f"{year}-12-31",
+                "limit":     1000,      # CDO maximum per request
+                "offset":    offset,
+                "units":     "metric",
+                # No datatypeid — accept all available types
+            }
+            try:
+                resp    = get_with_retry(url, params=params,
+                                         headers=headers, timeout=30)
+                payload = resp.json()
+                results = payload.get("results", [])
+            except Exception as exc:
+                print(f"    NOAA API error ({year} offset={offset}): {exc}")
+                break       # skip this year-chunk, try next year
+
+            if not results:
+                break       # no more data for this year
+
+            frames.append(pd.DataFrame(results))
+
+            # CDO metadata tells us total count available
+            total = payload.get("metadata", {}).get(
+                "resultset", {}).get("count", 0)
+            offset += len(results)
+            if offset > total:
+                break       # fetched everything
+
+            time.sleep(0.25)
+
+        time.sleep(0.5)     # pause between years
+
+    if not frames:
         return None
+
+    df = pd.concat(frames, ignore_index=True)
+
+    # Pivot wide: one row per date with TMAX/TMIN/PRCP columns
+    if "datatype" in df.columns and "value" in df.columns:
+        df = (df.pivot_table(index="date", columns="datatype",
+                             values="value", aggfunc="first")
+                .reset_index())
+        df.columns.name = None
+
+    return df
+
 
 
 def _fetch_open_meteo_station(lat, lon, name):
