@@ -1,0 +1,6 @@
+band,method,haze_dn,transmittance,reason
+B02.tif,COST,986.0,0.7071,SZA=45.0deg
+B03.tif,COST,1047.0,0.7071,SZA=45.0deg
+B04.tif,COST,926.0,0.7071,SZA=45.0deg
+B08.tif,COST,901.0,0.7071,SZA=45.0deg
+B11.tif,copy,0.0,1.0,"SWIR/WV/Cirrus: haze negligible, copied unchanged"

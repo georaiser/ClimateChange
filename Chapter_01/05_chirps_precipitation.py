@@ -65,7 +65,14 @@ os.makedirs(CHIRPS_DIR, exist_ok=True)
 os.makedirs(PROC_DIR,   exist_ok=True)
 
 # Study BBOX [min_lon, min_lat, max_lon, max_lat]
-BBOX     = [-73.5, -51.5, -72.5, -50.5]
+# NOTE: CHIRPS v2.0 global coverage is 50°S to 50°N only.
+# Torres del Paine sits at ~51°S which is just outside CHIRPS.
+# We use a 3°×2° window centred on the Patagonian precipitation
+# gradient (-73.5 to -70.5°W, -50° to -48°S) to capture the full
+# Andes rain shadow signal while staying within CHIRPS coverage.
+# The narrow 1°×1° strip at -50° had corrupted fill-values in
+# CHIRPS tiles for 2013-2016, producing spuriously low annual sums.
+BBOX     = [-73.5, -50.0, -70.5, -48.0]   # 3° lon x 2° lat, within CHIRPS coverage
 YEARS    = list(range(2000, 2025))
 MONTHS   = list(range(1, 13))
 
@@ -121,6 +128,12 @@ def read_bbox(fpath):
     """
     Read only the BBOX pixels from the global 0.05-deg CHIRPS grid.
     Avoids loading the full ~200 MB global array into memory.
+
+    Masking layers applied (in order):
+      1. Explicit nodata (-9999 or value from metadata)
+      2. Any negative value
+      3. Values <= MIN_PIXEL_MM -- CHIRPS fill / ocean / ice pixels in some
+         versions store tiny positive values (~1.44) instead of -9999.
     """
     with rasterio.open(fpath) as src:
         win = from_bounds(BBOX[0], BBOX[1], BBOX[2], BBOX[3], src.transform)
@@ -128,8 +141,10 @@ def read_bbox(fpath):
         data = src.read(1, window=win).astype("float32")
         out_transform = rasterio.windows.transform(win, src.transform)
         nodata = src.nodata if src.nodata is not None else -9999.0
-        # CHIRPS uses -9999 as nodata
+        # Layer 1 + 2: explicit nodata and negatives
         data = np.where((data == nodata) | (data < 0), np.nan, data)
+        # Layer 3: pixel floor -- remove suspiciously low fill values
+        data = np.where(data <= MIN_PIXEL_MM, np.nan, data)
         profile = src.profile.copy()
         profile.update({
             "height":    win.height,
@@ -146,15 +161,28 @@ def read_bbox(fpath):
 # ---------------------------------------------------------------------------
 # 3. Build complete time series
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Quality thresholds
+# ---------------------------------------------------------------------------
+MIN_MONTHS_COMPLETE = 10    # years with fewer months skipped from grid/stats
+MIN_PIXEL_MM        = 1.0   # pixel floor: CHIRPS fill/ocean pixels can be ~1.44mm;
+                            #   values at or below this are treated as nodata
+MIN_ANNUAL_MEAN_MM  = 150   # year-level outlier guard: Patagonia annual spatial
+                            #   mean never legitimately falls below ~150mm/year
+                            #   (even Argentine steppe gets >200mm). Years below
+                            #   this are flagged as 'suspect' and excluded from stats.
+
 def build_time_series():
     print("[2/5] Building CHIRPS time series...")
-    rows        = []
-    annual_grids = {}   # year -> annual total array
+    rows         = []
+    annual_grids = {}   # year -> annual total array (complete years only)
+    yr_months    = {}   # year -> number of months successfully read
     profile_ref  = None
 
     for yr in YEARS:
-        yr_sum = None
-        yr_count = 0
+        yr_sum   = None
+        yr_count = None
+        mo_ok    = 0
         for mo in MONTHS:
             fpath = download_chirps(yr, mo)
             if fpath is None:
@@ -166,37 +194,81 @@ def build_time_series():
                 if profile_ref is None:
                     profile_ref = profile
                 if yr_sum is None:
-                    yr_sum = np.where(np.isnan(data), 0.0, data)
+                    yr_sum   = np.where(np.isnan(data), 0.0, data)
                     yr_count = np.where(np.isnan(data), 0, 1)
                 else:
                     yr_sum   += np.where(np.isnan(data), 0.0, data)
                     yr_count += np.where(np.isnan(data), 0, 1)
+                mo_ok += 1
             except Exception as e:
                 print(f"  [WARN] {yr}-{mo:02d}: {e}")
 
-        if yr_sum is not None and yr_count is not None:
+        yr_months[yr] = mo_ok
+
+        # Year-level quality check
+        if yr_sum is not None and mo_ok > 0:
+            yr_mean_annual = float(np.nansum(yr_sum))   # rough spatial sum
+            yr_spatial_mean = float(np.nanmean(yr_sum)) # mean mm across pixels
+        else:
+            yr_spatial_mean = 0.0
+
+        is_complete = mo_ok >= MIN_MONTHS_COMPLETE
+        is_quality  = is_complete and (yr_spatial_mean >= MIN_ANNUAL_MEAN_MM)
+
+        if not is_complete:
+            flag = f"SKIP — only {mo_ok}/12 months"
+        elif not is_quality:
+            flag = f"SUSPECT — spatial mean {yr_spatial_mean:.0f} mm < {MIN_ANNUAL_MEAN_MM} mm threshold"
+        else:
+            flag = "OK"
+        print(f"  {yr}: {mo_ok:2d} months  [{flag}]")
+
+        # Only add to spatial grid stack if year passes both checks
+        if yr_sum is not None and is_quality:
             annual_grids[yr] = np.where(yr_count > 0, yr_sum, np.nan)
-        print(f"  {yr}: {yr_count.sum() if yr_count is not None else 0} months processed")
 
     ts_df = pd.DataFrame(rows)
     print(f"  Time series: {len(ts_df)} monthly records ({ts_df['year'].min()} - {ts_df['year'].max()})")
-    return ts_df, annual_grids, profile_ref
+    incomplete = [yr for yr, n in yr_months.items() if n < MIN_MONTHS_COMPLETE]
+    if incomplete:
+        print(f"  [NOTE] Skipped (incomplete months): {incomplete}")
+    return ts_df, annual_grids, yr_months, profile_ref
 
 
 # ---------------------------------------------------------------------------
 # 4. Compute climatology and anomalies
 # ---------------------------------------------------------------------------
-def compute_climatology_anomalies(ts_df):
-    annual_df = (ts_df.groupby("year")["precip_mm"]
-                 .sum().reset_index()
-                 .rename(columns={"precip_mm": "annual_mm"}))
+def compute_climatology_anomalies(ts_df, yr_months, annual_grids):
+    """Compute annual sums and anomaly Z-scores.
 
-    mean_val  = annual_df["annual_mm"].mean()
-    std_val   = annual_df["annual_mm"].std()
+    Only years present in annual_grids (i.e. passed both completeness
+    and quality checks) contribute to the Z-score baseline.  All other
+    years are included in the CSV but marked as 'suspect' or 'incomplete'.
+    """
+    annual_df = (ts_df.groupby("year")["precip_mm"]
+                 .agg(annual_mm="sum", months_available="count")
+                 .reset_index())
+
+    annual_df["is_complete"] = annual_df["months_available"] >= MIN_MONTHS_COMPLETE
+    annual_df["in_grid"]     = annual_df["year"].isin(annual_grids.keys())
+
+    # Z-scores computed only from years that passed all quality checks
+    good = annual_df[annual_df["in_grid"]]
+    mean_val = good["annual_mm"].mean()
+    std_val  = good["annual_mm"].std()
     annual_df["zscore"] = (annual_df["annual_mm"] - mean_val) / std_val
-    annual_df["regime"] = annual_df["zscore"].apply(
-        lambda z: "drought" if z < -1.0 else ("wet" if z > 1.0 else "normal")
-    )
+    annual_df.loc[~annual_df["in_grid"], "zscore"] = np.nan
+
+    def classify(row):
+        if not row["is_complete"]:  return "incomplete"
+        if not row["in_grid"]:      return "suspect"
+        z = row["zscore"]
+        if pd.isna(z):              return "suspect"
+        if z < -1.0:                return "drought"
+        if z >  1.0:                return "wet"
+        return "normal"
+
+    annual_df["regime"] = annual_df.apply(classify, axis=1)
 
     monthly_clim = (ts_df.groupby("month")["precip_mm"]
                     .mean().reset_index()
@@ -229,7 +301,11 @@ def save_climatology_tif(annual_grids, profile_ref):
         )
     sz = os.path.getsize(out_tif) / 1e6
     print(f"  [OK] Climatology TIF: {out_tif} ({sz:.1f} MB)")
-    print(f"       Range: {np.nanmin(clim):.0f} - {np.nanmax(clim):.0f} mm/year")
+    valid_clim = clim[np.isfinite(clim)]
+    if valid_clim.size > 0:
+        print(f"       Range: {np.nanmin(valid_clim):.0f} - {np.nanmax(valid_clim):.0f} mm/year")
+    else:
+        print("       [WARN] Climatology array is all-NaN. Check BBOX vs CHIRPS coverage.")
     return out_tif, clim
 
 
@@ -388,20 +464,30 @@ def main():
     else:
         print(f"  All {total_needed} files present -- no downloads needed.")
 
-    ts_df, annual_grids, profile_ref = build_time_series()
+    ts_df, annual_grids, yr_months, profile_ref = build_time_series()
 
     if ts_df.empty:
         print("\n  ERROR: No CHIRPS data available. Check network connection.")
         return
 
     print("\n[3/5] Computing climatology and anomalies...")
-    annual_df, monthly_clim = compute_climatology_anomalies(ts_df)
-    dry_row = annual_df.loc[annual_df["annual_mm"].idxmin()]
-    wet_row = annual_df.loc[annual_df["annual_mm"].idxmax()]
-    print(f"  Mean annual precip : {annual_df['annual_mm'].mean():.0f} mm/year")
+    annual_df, monthly_clim = compute_climatology_anomalies(ts_df, yr_months, annual_grids)
+
+    # Stats only from years that passed all quality checks
+    good_df  = annual_df[annual_df["in_grid"]]
+    if good_df.empty:
+        print("  [ERROR] No quality years available for statistics.")
+        return
+    dry_row  = good_df.loc[good_df["annual_mm"].idxmin()]
+    wet_row  = good_df.loc[good_df["annual_mm"].idxmax()]
+    suspect  = annual_df[annual_df["regime"] == "suspect"]["year"].tolist()
+    incompl  = annual_df[annual_df["regime"] == "incomplete"]["year"].tolist()
+    print(f"  Mean annual precip : {good_df['annual_mm'].mean():.0f} mm/year  ({len(good_df)} quality years)")
     print(f"  Driest year        : {int(dry_row['year'])} ({dry_row['annual_mm']:.0f} mm)")
     print(f"  Wettest year       : {int(wet_row['year'])} ({wet_row['annual_mm']:.0f} mm)")
-    print(f"  Variability (CV)   : {annual_df['annual_mm'].std()/annual_df['annual_mm'].mean()*100:.1f}%")
+    print(f"  Variability (CV)   : {good_df['annual_mm'].std()/good_df['annual_mm'].mean()*100:.1f}%")
+    if suspect:  print(f"  [EXCL] Suspect years (low-value artifact): {suspect}")
+    if incompl:  print(f"  [EXCL] Incomplete years (< {MIN_MONTHS_COMPLETE} months): {incompl}")
 
     print("\n[4/5] Saving outputs...")
     # Time series CSVs

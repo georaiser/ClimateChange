@@ -421,6 +421,48 @@ def plot_comparison(scene_dir, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# 5. Bridge: copy BOA output to sentinel2_l2a_* for downstream scripts
+# ---------------------------------------------------------------------------
+def bridge_to_pipeline(boa_dir, scene_type):
+    """
+    Copy COST-corrected BOA_*.tif bands into
+    data/raw/sentinel2_l2a_from_l1c_cost/ so that Chapter 2 and all
+    downstream scripts find them via their sentinel2_l2a_* glob.
+
+    Band filenames are de-prefixed (BOA_B04.tif -> B04.tif) to match
+    the format written by 02_satellite_acquisition.py.
+
+    Only runs when real L1C or L1TP data was corrected.
+    Skipped in DEMO mode (L2A data is already in the right place).
+    """
+    if scene_type not in ("sentinel2_l1c", "landsat_l1tp"):
+        return None
+
+    raw_dir    = os.path.join(BASE_DIR, "data", "raw")
+    bridge_dir = os.path.join(raw_dir, "sentinel2_l2a_from_l1c_cost")
+    os.makedirs(bridge_dir, exist_ok=True)
+
+    boa_files  = sorted(glob.glob(os.path.join(boa_dir, "BOA_*.tif")))
+    if not boa_files:
+        print("  [WARN] No BOA_*.tif files found — bridge skipped.")
+        return None
+
+    copied = 0
+    for src_path in boa_files:
+        # BOA_B04.tif  ->  B04.tif  (strip the BOA_ prefix)
+        src_name  = os.path.basename(src_path)
+        dst_name  = src_name.replace("BOA_", "", 1)
+        dst_path  = os.path.join(bridge_dir, dst_name)
+        shutil.copy2(src_path, dst_path)
+        copied += 1
+
+    print(f"  [OK] Bridge: {copied} bands copied -> {bridge_dir}")
+    print(f"       Chapter 2+ scripts will auto-detect this folder via")
+    print(f"       sentinel2_l2a_* glob -- no manual steps needed.")
+    return bridge_dir
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -462,8 +504,14 @@ def main():
         pd.DataFrame(report_rows).to_csv(csv_path, index=False, encoding="utf-8")
         print(f"\n  [OK] Correction report: {csv_path}")
 
-    print("\n[4/4] Building comparison figure...")
+    print("\n[4/5] Building comparison figure...")
     plot_comparison(scene_dir, out_dir)
+
+    print("\n[5/5] Bridging corrected bands to pipeline data folder...")
+    bridge_dir = bridge_to_pipeline(out_dir, scene_type)
+    if bridge_dir is None and scene_type == "demo_l2a":
+        print("  [SKIP] Demo mode — L2A bands already in sentinel2_l2a_* folder.")
+        print("         Chapter 2+ scripts will read the original L2A data directly.")
 
     n_corrected = sum(1 for r in report_rows if r["method"] == "COST")
     n_copied    = sum(1 for r in report_rows if r["method"] == "copy")
@@ -471,11 +519,14 @@ def main():
     print("\n" + "=" * 65)
     print(" ATMOSPHERIC CORRECTION COMPLETE")
     print("=" * 65)
-    print(f"  Bands COST-corrected: {n_corrected}")
-    print(f"  Bands copied (SWIR) : {n_copied}")
-    print(f"  Output folder : {out_dir}")
-    print(f"  Report CSV    : {os.path.join(OUTPUT_DIR, 'correction_report.csv')}")
-    print(f"  Figure        : {os.path.join(OUTPUT_DIR, 'correction_comparison.png')}")
+    print(f"  Bands COST-corrected : {n_corrected}")
+    print(f"  Bands copied (SWIR)  : {n_copied}")
+    print(f"  BOA output folder    : {out_dir}")
+    if bridge_dir:
+        print(f"  Pipeline bridge      : {bridge_dir}")
+        print(f"  -> Chapter 2+ will auto-detect sentinel2_l2a_from_l1c_cost/")
+    print(f"  Report CSV           : {os.path.join(OUTPUT_DIR, 'correction_report.csv')}")
+    print(f"  Figure               : {os.path.join(OUTPUT_DIR, 'correction_comparison.png')}")
     print()
     print("  ArcGIS Pro: Add BOA_*.tif as raster layers.")
     print("              Data Management > Composite Bands to stack all bands.")

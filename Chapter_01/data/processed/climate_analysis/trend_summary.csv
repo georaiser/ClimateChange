@@ -1,0 +1,11 @@
+variable,n_years,mean,std,sens_slope_per_decade,sens_slope_per_year,mk_tau,mk_pvalue,significant,trend_direction,ols_slope_per_year,r_squared
+relative_humidity_2m_mean,32,83.4012,1.9258,-0.9577,-0.09577,-0.375,0.0027,True,decreasing,-0.148883,0.5095
+wind_gusts_10m_max,32,58.4823,7.0962,3.56234,0.356234,0.3548,0.00454,True,increasing,0.462511,0.3622
+wind_speed_10m_max,32,9.2816,0.565,-0.34304,-0.034304,-0.2984,0.01713,True,decreasing,-0.033083,0.2923
+et0_fao_evapotranspiration,32,436.5659,29.6272,15.59643,1.559643,0.2863,0.02222,True,increasing,1.930676,0.362
+temperature_2m_max,32,2.6115,0.6747,0.25779,0.025779,0.2782,0.02631,True,increasing,0.033177,0.2061
+shortwave_radiation_sum,32,4241.8619,139.1418,70.47222,7.047222,0.2661,0.03364,True,increasing,6.749337,0.2006
+precipitation_sum,32,2836.2875,366.2574,178.20455,17.820455,0.2581,0.03945,True,increasing,15.414223,0.151
+snowfall_sum,32,939.1856,179.1243,65.03583,6.503583,0.2218,0.07713,False,increasing,5.646213,0.0847
+temperature_2m_min,32,-2.5132,0.5618,0.1289,0.01289,0.1935,0.12342,False,increasing,0.002949,0.0023
+temperature_2m_mean,32,0.0939,0.5541,0.20773,0.020773,0.1734,0.16808,False,increasing,0.019102,0.1013

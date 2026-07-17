@@ -285,8 +285,8 @@ def plot_trends(annual, trend_df):
     ax4.text(0.55, y, "Slope/decade", color=C_GREY, fontsize=8, transform=ax4.transAxes)
     ax4.text(0.82, y, "p-value", color=C_GREY, fontsize=8, transform=ax4.transAxes)
     y -= 0.06
-    ax4.axhline(y=y + 0.005, xmin=0.02, xmax=0.98, color="#30363d", lw=0.8,
-                transform=ax4.transAxes)
+    ax4.plot([0.02, 0.98], [y + 0.005, y + 0.005], color="#30363d", lw=0.8,
+         transform=ax4.transAxes)
 
     for _, row in sig_rows.iterrows():
         label = str(row["variable"])[:35]

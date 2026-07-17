@@ -20,25 +20,35 @@
 
 ---
 
-## Data Connection: Chapter 1 -> Chapter 2
+## Data Connection: Chapter 1 → Chapter 2
+
+Chapter 2 scripts resolve satellite data using this priority chain:
 
 ```
-Chapter_01/
-└── data/raw/sentinel2_l2a_{date}/        <- Script 02 downloads this
-    ├── B02.tif, B03.tif, B04.tif
-    ├── B05.tif, B08.tif
-    ├── B11.tif, B12.tif
-    └── metadata.json
+Priority 1: Chapter_01/data/raw/sentinel2_l2a_{date}/
+            └─ Standard download from 02_satellite_acquisition.py (L2A, pre-corrected)
 
-Chapter_02/06_spectral_signature_analysis.py
-    --> Reads B02-B12 bands directly from Chapter_01/data/raw/
-    --> Falls back to STAC streaming if local not found
+Priority 2: Chapter_01/data/raw/sentinel2_l2a_from_l1c_cost/
+            └─ Auto-created by 03_atmospheric_correction.py when L1C data present
+              (COST-corrected BOA bands, float32 [0-1], nodata=-9999)
+
+Priority 3: Chapter_01/data/raw/sentinel2_l2a_from_l1c_flaash/
+            └─ Manually copy FLAASH output here for publication-grade results
+              (rename bands to B02.tif, B03.tif ... to match expected format)
+
+Fallback:   Planetary Computer STAC (live stream, no download needed)
+            └─ Used when none of the above folders exist
 ```
+
+All sources produce **float32 reflectance [0–1]** GeoTIFFs with `nodata=-9999` and
+`compress=lzw`, so all downstream index calculations work identically regardless
+of which source was used.
 
 > [!IMPORTANT]
-> Run **Chapter_01/02_satellite_acquisition.py** before Chapter 2 scripts
-> to download the Sentinel-2 data once. Chapter 2 will then use local data
-> (faster, no internet dependency for re-runs).
+> Run **Chapter_01/02_satellite_acquisition.py** before Chapter 2 to cache data
+> locally. If you have L1C images, run **Chapter_01/03_atmospheric_correction.py**
+> first — it will auto-bridge the corrected bands so Chapter 2 finds them via
+> the `sentinel2_l2a_*` glob with no manual steps needed.
 
 ---
 
