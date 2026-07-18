@@ -1,0 +1,6 @@
+station_id,lat,lon,elevation,n_records,mean_temp,std_temp,min_temp,max_temp,model_rmse,model_r2,output_tif
+Balmaceda,-45.917,-71.7,520,5071,7.589,5.241,-8.6,22.9,2.5038,0.7924,D:\00_AI_Aplications\ClimateChange\Chapter_01\data\processed\climate_analysis\temperature_surface.tif
+El_Calafate,-50.267,-72.05,100,5085,8.012,5.495,-8.6,22.5,2.5038,0.7924,D:\00_AI_Aplications\ClimateChange\Chapter_01\data\processed\climate_analysis\temperature_surface.tif
+Punta_Arenas,-53.0,-70.967,37,5100,6.566,3.807,-6.7,18.6,2.5038,0.7924,D:\00_AI_Aplications\ClimateChange\Chapter_01\data\processed\climate_analysis\temperature_surface.tif
+Rio_Gallegos,-51.617,-69.283,100,5099,7.976,4.99,-6.9,22.4,2.5038,0.7924,D:\00_AI_Aplications\ClimateChange\Chapter_01\data\processed\climate_analysis\temperature_surface.tif
+Teniente_Vidal_Coyhaique,-45.594,-72.106,310,3756,8.816,5.297,-6.4,24.1,2.5038,0.7924,D:\00_AI_Aplications\ClimateChange\Chapter_01\data\processed\climate_analysis\temperature_surface.tif

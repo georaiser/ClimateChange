@@ -84,9 +84,10 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH  = os.path.join(BASE_DIR, "data", "raw", "real_data", "weather_stations.csv")
-OUT_DIR   = os.path.join(BASE_DIR, "data", "processed", "climate_analysis")
+BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH       = os.path.join(BASE_DIR, "data", "raw", "real_data", "weather_stations.csv")
+GHCN_CSV_PATH  = os.path.join(BASE_DIR, "data", "raw", "real_data", "ghcn_stations_patagonia.csv")
+OUT_DIR        = os.path.join(BASE_DIR, "data", "processed", "climate_analysis")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Study BBOX [min_lon, min_lat, max_lon, max_lat]
@@ -160,25 +161,120 @@ def make_demo_data():
 
 
 # ---------------------------------------------------------------------------
+# Helper: adapt ghcn_stations_patagonia.csv to the standard station schema
+# ---------------------------------------------------------------------------
+# Known elevations (m) for each GHCN station by name fragment
+_STATION_ELEVATIONS = {
+    "Punta_Arenas":   37,
+    "Puerto_Natales": 14,
+    "Torres":         154,
+    "Cochrane":       182,
+    "Coyhaique":      310,
+    "Balmaceda":      520,
+    "Puerto_Montt":   85,
+}
+
+def _load_ghcn_as_station_df(path):
+    """Read ghcn_stations_patagonia.csv and return a DataFrame with the
+    columns required by downstream functions:
+      station_id, date, lat, lon, elevation, temp_celsius
+
+    Temperature priority (highest accuracy first):
+      TAVG  -> already a daily mean
+      (TMAX + TMIN) / 2  -> computed mean
+      TMAX alone  -> proxy
+      temperature_2m_max (Open-Meteo fallback)
+    """
+    df = pd.read_csv(path)
+    # Explicit datetime parse — ISO format '2010-01-01T00:00:00' needs coerce
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])   # drop rows where date could not be parsed
+
+    # Normalise station name to station_id (strip whitespace, replace spaces)
+    df["station_id"] = (
+        df["station_name"]
+        .str.strip()
+        .str.replace(r"\s+", "_", regex=True)
+    )
+
+    # Rename coordinate columns
+    df = df.rename(columns={"latitude": "lat", "longitude": "lon"})
+
+    # Build temp_celsius: try TAVG first, then (TMAX+TMIN)/2, then individual bands
+    df["TAVG"]  = pd.to_numeric(df.get("TAVG"),  errors="coerce")
+    df["TMAX"]  = pd.to_numeric(df.get("TMAX"),  errors="coerce")
+    df["TMIN"]  = pd.to_numeric(df.get("TMIN"),  errors="coerce")
+    df["OM_MAX"]= pd.to_numeric(df.get("temperature_2m_max"), errors="coerce")
+    df["OM_MIN"]= pd.to_numeric(df.get("temperature_2m_min"), errors="coerce")
+
+    # NOAA stores tenths of degrees for TMAX/TMIN in some datasets;
+    # values > 100 are a sign of that -- divide by 10
+    for col in ["TMAX", "TMIN", "TAVG"]:
+        if df[col].dropna().abs().max() > 100:
+            df[col] = df[col] / 10.0
+
+    computed_mean = (df["TMAX"] + df["TMIN"]) / 2.0
+    om_mean       = (df["OM_MAX"] + df["OM_MIN"]) / 2.0
+
+    df["temp_celsius"] = (
+        df["TAVG"]
+        .combine_first(computed_mean)
+        .combine_first(df["TMAX"])
+        .combine_first(om_mean)
+    )
+
+    # Assign elevation from lookup (or 100m default if unknown)
+    def _elev(sid):
+        for frag, elev in _STATION_ELEVATIONS.items():
+            if frag.lower() in sid.lower():
+                return elev
+        return 100
+    df["elevation"] = df["station_id"].apply(_elev)
+
+    out = df[["station_id", "date", "lat", "lon", "elevation", "temp_celsius"]].copy()
+    out = out.dropna(subset=["temp_celsius"])
+    # Format date as plain string after all filtering is done
+    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 1. Load station data (real or demo)
 # ---------------------------------------------------------------------------
 def load_station_data():
+    # Priority 1: canonical weather_stations.csv
     if os.path.exists(CSV_PATH):
         df = pd.read_csv(CSV_PATH)
         n  = len(df)
         ns = df["station_id"].nunique() if "station_id" in df.columns else "?"
-        print(f"  [OK] Loaded {n:,} records from {ns} stations")
-        # Validate required columns
+        print(f"  [OK] Loaded {n:,} records from {ns} stations (weather_stations.csv)")
         required = {"station_id", "date", "lat", "lon", "elevation", "temp_celsius"}
         missing  = required - set(df.columns)
         if missing:
-            print(f"  [WARN] Missing columns: {missing}. Using demo data instead.")
-            return make_demo_data(), True
+            print(f"  [WARN] Missing columns: {missing}. Trying GHCN file...")
+        else:
+            return df, False
+
+    # Priority 2: ghcn_stations_patagonia.csv (produced by 01_data_download.py)
+    if os.path.exists(GHCN_CSV_PATH):
+        print(f"  [OK] Found GHCN station file -- adapting to station schema...")
+        df = _load_ghcn_as_station_df(GHCN_CSV_PATH)
+        n  = len(df)
+        ns = df["station_id"].nunique()
+        print(f"  [OK] {n:,} records  |  {ns} stations  |  source: ghcn_stations_patagonia.csv")
+        if n < 100:
+            print(f"  [WARN] Very few records ({n}). Supplement with DEMO data.")
+            demo = make_demo_data()
+            df   = pd.concat([df, demo], ignore_index=True)
+            print(f"  [MIX]  Combined: {len(df):,} records (real + synthetic demo)")
+            return df, True    # still flag as demo-supplemented
         return df, False
-    else:
-        print(f"  [NOTE] CSV not found: {CSV_PATH}")
-        print("         Run 01_data_download.py (NOAA section) to download real data.")
-        return make_demo_data(), True
+
+    # Fallback: synthetic demo
+    print(f"  [NOTE] CSV not found: {CSV_PATH}")
+    print(f"  [NOTE] GHCN file also missing: {GHCN_CSV_PATH}")
+    print("         Run 01_data_download.py to download real station data.")
+    return make_demo_data(), True
 
 
 # ---------------------------------------------------------------------------
@@ -380,24 +476,42 @@ def train_model(cleaned_df):
 # ---------------------------------------------------------------------------
 # 6. Predict temperature surface on dense grid
 # ---------------------------------------------------------------------------
-def predict_surface(model, predict_date="2023-01-15"):
+def predict_surface(model, cleaned_df, predict_date="2023-01-15"):
     """
-    Apply the trained model to a regular lat/lon/elevation grid across BBOX.
-    Elevation estimated from a simple lapse rate model for the prediction grid
-    (in production, replace with actual Copernicus DEM values).
+    Apply the trained model to a regular lat/lon/elevation grid.
+
+    The prediction BBOX is derived automatically from the station data so
+    the grid always covers the region where the model has training support.
+    Using the hardcoded BBOX (1°x1°) caused a flat surface because only
+    one station fell inside it, leaving lat/lon/elevation with near-zero
+    spatial variance in the prediction.
+
+    Elevation is estimated via a simple Andes ridge lapse-rate model.
+    Replace elev_grid with a real DEM interpolation for publication work.
     """
     print(f"\n  Predicting temperature surface for {predict_date}...")
 
-    lons = np.arange(BBOX[0], BBOX[2] + GRID_RES, GRID_RES)
-    lats = np.arange(BBOX[1], BBOX[3] + GRID_RES, GRID_RES)
+    # ---- Derive BBOX from actual stations with 0.5° padding ----
+    PAD = 0.5
+    min_lon = cleaned_df["lon"].min() - PAD
+    max_lon = cleaned_df["lon"].max() + PAD
+    min_lat = cleaned_df["lat"].min() - PAD
+    max_lat = cleaned_df["lat"].max() + PAD
+    pred_bbox = [min_lon, min_lat, max_lon, max_lat]
+    print(f"  Prediction BBOX (auto): [{min_lon:.1f}, {min_lat:.1f}, {max_lon:.1f}, {max_lat:.1f}]")
+
+    lons = np.arange(pred_bbox[0], pred_bbox[2] + GRID_RES, GRID_RES)
+    lats = np.arange(pred_bbox[1], pred_bbox[3] + GRID_RES, GRID_RES)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
 
-    # Estimated elevation: simple ridge model (higher near -73.0 lon = Andes divide)
-    # Replace with real DEM interpolation in production
-    base_elev = 200.0
-    andes_ridge_lon = -73.1
-    elev_grid = base_elev + np.maximum(0, (andes_ridge_lon - lon_grid) * 1500)
-    elev_grid = np.clip(elev_grid, 0, 2500).astype("float32")
+    # ---- Elevation: Andes ridge lapse-rate model ----
+    # The Andes divide runs roughly 1-2 degrees east of the coast.
+    # Pixels west of the median station longitude are assumed higher (windward).
+    andes_ridge_lon = cleaned_df["lon"].median() - 1.0
+    dist_from_ridge = np.maximum(0, andes_ridge_lon - lon_grid)   # deg east of ridge
+    base_elev  = 150.0
+    elev_grid  = base_elev + dist_from_ridge * 800   # ~800m per degree approaching ridge
+    elev_grid  = np.clip(elev_grid, 0, 3000).astype("float32")
 
     date = pd.to_datetime(predict_date)
     doy  = date.dayofyear
@@ -412,11 +526,13 @@ def predict_surface(model, predict_date="2023-01-15"):
         "month_cos": np.cos(2 * np.pi * date.month / 12),
     })
 
-    pred = model.predict(grid_df[FEATURE_COLS])
+    pred      = model.predict(grid_df[FEATURE_COLS])
     temp_grid = pred.reshape(lat_grid.shape).astype("float32")
 
     nrows, ncols = temp_grid.shape
-    transform    = transform_from_bounds(BBOX[0], BBOX[1], BBOX[2], BBOX[3], ncols, nrows)
+    transform    = transform_from_bounds(
+        pred_bbox[0], pred_bbox[1], pred_bbox[2], pred_bbox[3], ncols, nrows
+    )
 
     # Save GeoTIFF (nodata=-9999, LZW compressed, ArcGIS/ENVI compatible)
     out_tif = os.path.join(OUT_DIR, "temperature_surface.tif")
@@ -428,7 +544,7 @@ def predict_surface(model, predict_date="2023-01-15"):
         dst.write(temp_grid, 1)
         dst.update_tags(
             description=f"RF interpolated temperature for {predict_date}",
-            bbox=str(BBOX),
+            bbox=str(pred_bbox),
             grid_res_deg=str(GRID_RES),
             units="deg C",
             nodata="-9999",
@@ -437,8 +553,12 @@ def predict_surface(model, predict_date="2023-01-15"):
         )
     print(f"  [OK] Temperature surface TIF: {out_tif}")
     print(f"       Grid: {ncols} x {nrows} pixels at {GRID_RES} deg")
-    print(f"       Range: {temp_grid.min():.1f} to {temp_grid.max():.1f} deg C")
-    return temp_grid, lons, lats, out_tif
+    t_min, t_max = float(temp_grid.min()), float(temp_grid.max())
+    print(f"       Range: {t_min:.1f} to {t_max:.1f} deg C  (spread: {t_max-t_min:.2f} deg C)")
+    if t_max - t_min < 0.5:
+        print("       [WARN] Very flat surface -- RF spatial features may have low variance.")
+        print("              Consider adding more stations or a DEM covariate.")
+    return temp_grid, lons, lats, out_tif, pred_bbox
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +660,92 @@ def plot_analysis(cleaned_df, temp_grid, lons, lats, metrics, diagnostics):
 
 
 # ---------------------------------------------------------------------------
-# 8. Save statistics CSV
+# 7b. RF model diagnostics figure (promised in docstring)
 # ---------------------------------------------------------------------------
+def plot_rf_diagnostics(cleaned_df, metrics, diagnostics):
+    """3-panel residual diagnostics for the RF model.
+
+    Panel 1 -- Residuals vs Predicted  : checks for heteroscedasticity
+    Panel 2 -- Residual histogram       : normality of errors
+    Panel 3 -- Residuals vs Date (colored by station): temporal drift / bias
+    """
+    print("  Building RF diagnostics figure...")
+    y_test, y_pred, importance = diagnostics
+    residuals = y_pred - y_test
+
+    fig = plt.figure(figsize=(18, 6), facecolor=DARK_BG)
+    gs  = gridspec.GridSpec(1, 3, figure=fig, hspace=0.3, wspace=0.35,
+                            top=0.88, bottom=0.12, left=0.06, right=0.97)
+    fig.text(0.5, 0.96, "GeoCascade -- RF Model Diagnostics",
+             ha="center", color=C_TEXT, fontsize=12, fontweight="bold")
+    fig.text(0.5, 0.93, f"RMSE={metrics['rmse']:.3f} °C  |  MAE={metrics['mae']:.3f} °C  |  R²={metrics['r2']:.4f}  |  n_test={len(y_test):,}",
+             ha="center", color=C_GREY, fontsize=9)
+
+    def style(ax, title, xlabel, ylabel):
+        ax.set_facecolor(DARK_AX)
+        for sp in ax.spines.values(): sp.set_color("#30363d")
+        ax.tick_params(colors=C_TEXT, labelsize=8)
+        ax.grid(alpha=0.15, color="#30363d")
+        ax.set_title(title, color=C_TEXT, fontsize=10, fontweight="bold", pad=5)
+        ax.set_xlabel(xlabel, color=C_TEXT, fontsize=9)
+        ax.set_ylabel(ylabel, color=C_TEXT, fontsize=9)
+
+    # Panel 1 -- Residuals vs Predicted
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.scatter(y_pred, residuals, c=C_BLUE, s=6, alpha=0.4)
+    ax1.axhline(0, color=C_GOLD, lw=1.5, ls="--")
+    ax1.axhline(+2 * metrics["rmse"], color=C_RED, lw=0.8, ls=":", label=u"±2×RMSE")
+    ax1.axhline(-2 * metrics["rmse"], color=C_RED, lw=0.8, ls=":")
+    ax1.legend(fontsize=8, facecolor=DARK_BG, labelcolor=C_TEXT)
+    style(ax1, "Residuals vs Predicted", "Predicted (\u00b0C)", "Residual (pred - actual, \u00b0C)")
+
+    # Panel 2 -- Residual histogram
+    ax2 = fig.add_subplot(gs[0, 1])
+    n_bins = min(40, max(10, len(residuals) // 50))
+    ax2.hist(residuals, bins=n_bins, color=C_BLUE, alpha=0.75, edgecolor="#30363d")
+    # Normal overlay
+    mu, sigma = residuals.mean(), residuals.std()
+    x_norm = np.linspace(residuals.min(), residuals.max(), 200)
+    from scipy.stats import norm as sp_norm
+    pdf = sp_norm.pdf(x_norm, mu, sigma)
+    # Scale PDF to match histogram counts
+    bin_width = (residuals.max() - residuals.min()) / n_bins
+    ax2.plot(x_norm, pdf * len(residuals) * bin_width,
+             color=C_GOLD, lw=2, label=f"Normal(μ={mu:.2f}, σ={sigma:.2f})")
+    ax2.axvline(0, color=C_RED, lw=1.2, ls="--")
+    ax2.legend(fontsize=8, facecolor=DARK_BG, labelcolor=C_TEXT)
+    style(ax2, "Residual Distribution", "Residual (\u00b0C)", "Count")
+
+    # Panel 3 -- Residuals vs time  (need dates from cleaned_df test split)
+    # Use hold-out fraction of records (last HOLDOUT_FRAC of each station)
+    ax3 = fig.add_subplot(gs[0, 2])
+    palette = [C_BLUE, C_GREEN, C_GOLD, C_RED, C_CYAN, "#9b59b6", "#e67e22"]
+    # Reconstruct approximate dates by re-sorting cleaned_df station split
+    # (exact alignment isn't needed -- we just show overall temporal spread)
+    stn_ids = cleaned_df["station_id"].unique()
+    n_test  = len(y_test)
+    # Assign approximate dates from the test set rows
+    test_df = cleaned_df.copy()
+    test_df["date"] = pd.to_datetime(test_df["date"])
+    test_df = test_df.sort_values("date").tail(n_test).reset_index(drop=True)
+    if len(test_df) == len(residuals):
+        for i, stn in enumerate(test_df["station_id"].unique()):
+            mask = test_df["station_id"] == stn
+            ax3.scatter(test_df.loc[mask, "date"], residuals[mask.values],
+                        c=palette[i % len(palette)], s=5, alpha=0.5, label=stn[:16])
+    else:
+        ax3.scatter(range(len(residuals)), residuals, c=C_BLUE, s=5, alpha=0.5)
+    ax3.axhline(0, color=C_GOLD, lw=1.5, ls="--")
+    ax3.legend(fontsize=7, facecolor=DARK_BG, labelcolor=C_TEXT, markerscale=2)
+    style(ax3, "Residuals Over Time", "Date", "Residual (\u00b0C)")
+    ax3.tick_params(axis="x", rotation=30)
+
+    out_png = os.path.join(OUT_DIR, "rf_model_diagnostics.png")
+    fig.savefig(out_png, dpi=150, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"  [OK] RF diagnostics: {out_png}")
+
+
 def save_statistics(cleaned_df, metrics, out_tif):
     rows = []
     for stn, grp in cleaned_df.groupby("station_id"):
@@ -590,10 +794,12 @@ def main():
     model, metrics, diagnostics = train_model(cleaned_df)
 
     print("\n[4/5] Predicting temperature surface...")
-    temp_grid, lons, lats, out_tif = predict_surface(model, predict_date="2023-01-15")
+    temp_grid, lons, lats, out_tif, pred_bbox = predict_surface(model, cleaned_df, predict_date="2023-01-15")
 
     print("\n[5/5] Generating analysis figures and statistics...")
+    print("  Building 4-panel analysis figure...")
     plot_analysis(cleaned_df, temp_grid, lons, lats, metrics, diagnostics)
+    plot_rf_diagnostics(cleaned_df, metrics, diagnostics)
     save_statistics(cleaned_df, metrics, out_tif)
 
     print("\n" + "=" * 65)
@@ -601,6 +807,7 @@ def main():
     print("=" * 65)
     print(f"  QC plot     : {os.path.join(OUT_DIR, 'anomaly_validation_plot.png')}")
     print(f"  Analysis    : {os.path.join(OUT_DIR, 'station_ml_analysis.png')}")
+    print(f"  Diagnostics : {os.path.join(OUT_DIR, 'rf_model_diagnostics.png')}")
     print(f"  Surface TIF : {out_tif}")
     print(f"  Stats CSV   : {os.path.join(OUT_DIR, 'temperature_surface_stats.csv')}")
     print()

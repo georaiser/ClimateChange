@@ -473,8 +473,20 @@ def main():
         # Rural reference: cooler by ~4 deg C on average
         rural_lst -= 4.0
 
-    urban_mean = float(np.nanmean(urban_lst))
-    rural_mean = float(np.nanmean(rural_lst))
+    urban_mean = float(np.nanmean(urban_lst)) if urban_lst is not None else float("nan")
+    rural_mean = float(np.nanmean(rural_lst)) if rural_lst is not None else float("nan")
+
+    # Guard: if STAC data produced all-NaN (heavy cloud cover), fall back to synthetic
+    if np.isnan(urban_mean):
+        print("  [FALLBACK] STAC LST all-NaN (cloud/fill) -- using synthetic for Punta Arenas")
+        urban_lst, u_transform, u_crs = build_synthetic_lst(URBAN_BBOX)
+        urban_mean = float(np.nanmean(urban_lst))
+    if np.isnan(rural_mean):
+        print("  [FALLBACK] STAC LST all-NaN (cloud/fill) -- using synthetic for Torres del Paine")
+        rural_lst, r_transform, r_crs = build_synthetic_lst(RURAL_BBOX, shape=(120, 120))
+        rural_lst -= 4.0
+        rural_mean = float(np.nanmean(rural_lst))
+
     uhi_intens = compute_uhi_stats(urban_mean, rural_mean)
 
     print(f"\n  Urban mean LST : {urban_mean:.2f} deg C")
@@ -483,11 +495,12 @@ def main():
 
     # ---- Monthly time series (synthetic or computed from stack) ------------
     monthly_df = simulate_monthly_ts(urban_mean, rural_mean)
-    summer_uhi = ((monthly_df["urban_C"] - monthly_df["rural_C"])
-                  [[1, 2, 12]].mean()
-                  if 12 in monthly_df.index.month.tolist()
-                  else (monthly_df["urban_C"] - monthly_df["rural_C"]).iloc[[0,1]].mean())
-    winter_uhi = (monthly_df["urban_C"] - monthly_df["rural_C"]).iloc[5:8].mean()
+    # monthly_df has DatetimeIndex -- use .index.month for month-based selection
+    uhi_series = monthly_df["urban_C"] - monthly_df["rural_C"]
+    summer_mask = monthly_df.index.month.isin([12, 1, 2])   # DJF = S.Hemisphere summer
+    winter_mask = monthly_df.index.month.isin([6, 7, 8])    # JJA = S.Hemisphere winter
+    summer_uhi  = uhi_series[summer_mask].mean()
+    winter_uhi  = uhi_series[winter_mask].mean()
 
     print(f"\n  Summer (DJF) mean UHI : {summer_uhi:+.2f} deg C")
     print(f"  Winter (JJA) mean UHI : {winter_uhi:+.2f} deg C")

@@ -84,31 +84,51 @@ BASELINE_END   = 2023
 # ---------------------------------------------------------------------------
 
 def load_era5_monthly(path: str) -> pd.DataFrame:
-    """Load ERA5 monthly CSV and return a clean DataFrame with a DatetimeIndex."""
+    """Load ERA5 monthly CSV and return a clean DataFrame with a DatetimeIndex.
+
+    Handles two layouts:
+      A) Single date column  (date / time / year_month / datetime)
+      B) Split year + month  integer columns (as produced by 01_data_download.py)
+    """
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # --- detect date column ---
-    date_col = None
-    for c in ["date", "time", "year_month", "month", "datetime"]:
-        if c in df.columns:
-            date_col = c
-            break
-    if date_col is None:
-        date_col = df.columns[0]
-
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.set_index(date_col).sort_index()
+    # --- build DatetimeIndex ---
+    # Layout B: separate year + month columns (no combined date column)
+    if "year" in df.columns and "month" in df.columns and "date" not in df.columns:
+        df["date"] = pd.to_datetime(
+            df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
+        )
+        df = df.drop(columns=["year", "month"])
+        df = df.set_index("date").sort_index()
+    else:
+        # Layout A: single date column
+        date_col = None
+        for c in ["date", "time", "year_month", "datetime"]:
+            if c in df.columns:
+                date_col = c
+                break
+        if date_col is None:
+            date_col = df.columns[0]
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.set_index(date_col).sort_index()
 
     # --- detect precipitation column ---
     precip_col = None
-    for candidate in ["tp", "precip", "precipitation", "prcp", "rain",
-                       "total_precipitation", "monthly_precip"]:
+    for candidate in ["precip_sum", "tp", "precip", "precipitation", "prcp",
+                       "rain", "total_precipitation", "monthly_precip",
+                       "precipitation_sum"]:
         if candidate in df.columns:
             precip_col = candidate
             break
     if precip_col is None:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Last resort: first numeric column that is not a time component
+        skip = {"year", "month", "day", "hour"}
+        numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns
+                        if c not in skip]
+        if not numeric_cols:
+            raise ValueError(f"No precipitation column found in {path}. "
+                             f"Columns: {df.columns.tolist()}")
         precip_col = numeric_cols[0]
         print(f"  [INFO] Precipitation column auto-detected: '{precip_col}'")
     else:
@@ -116,7 +136,7 @@ def load_era5_monthly(path: str) -> pd.DataFrame:
 
     # ERA5 delivers tp in metres; convert to mm if max < 5 (heuristic)
     series = df[precip_col].copy()
-    if series.max() < 5:
+    if series.dropna().max() < 5:
         print("  [INFO] Values look like metres -> converting to mm (*1000)")
         series = series * 1000.0
 
@@ -129,7 +149,12 @@ def compute_anomalies(df: pd.DataFrame,
                       start_year: int,
                       end_year: int) -> pd.DataFrame:
     """Compute monthly anomalies against the climatological baseline."""
-    baseline   = df[(df.index.year >= start_year) & (df.index.year <= end_year)]
+    baseline = df[(df.index.year >= start_year) & (df.index.year <= end_year)]
+    if baseline.empty or baseline["precip_mm"].isna().all():
+        raise ValueError(
+            f"No valid data in baseline period {start_year}-{end_year}. "
+            f"Data spans {df.index.year.min()}-{df.index.year.max()}."
+        )
     monthly_clim = baseline.groupby(baseline.index.month)["precip_mm"].mean()
 
     df = df.copy()
@@ -142,8 +167,15 @@ def compute_anomalies(df: pd.DataFrame,
 
 def apply_kmeans(df: pd.DataFrame, n_clusters: int = 4):
     """Fit K-Means on scaled anomaly values and return labelled df + model."""
+    # Drop rows where anomaly is NaN before clustering
+    df_clean = df.dropna(subset=["anomaly_mm"])
+    if len(df_clean) < n_clusters:
+        raise ValueError(
+            f"Only {len(df_clean)} valid anomaly rows -- need at least {n_clusters}."
+        )
+
     scaler = StandardScaler()
-    X = scaler.fit_transform(df[["anomaly_mm"]])
+    X = scaler.fit_transform(df_clean[["anomaly_mm"]])
 
     km = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
     raw_labels = km.fit_predict(X)
@@ -153,10 +185,10 @@ def apply_kmeans(df: pd.DataFrame, n_clusters: int = 4):
     remap  = {old: new for new, old in enumerate(centroid_order)}
     labels = np.array([remap[l] for l in raw_labels])
 
-    df = df.copy()
-    df["cluster_id"]   = labels
-    df["cluster_name"] = [CLUSTER_NAMES[i] for i in labels]
-    return df, km
+    df_clean = df_clean.copy()
+    df_clean["cluster_id"]   = labels
+    df_clean["cluster_name"] = [CLUSTER_NAMES[i] for i in labels]
+    return df_clean, km
 
 
 # ---------------------------------------------------------------------------

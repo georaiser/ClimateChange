@@ -77,12 +77,27 @@ def load_era5():
             "ERA5 daily CSV not found: " + daily_path +
             "  Run 01_data_download.py first."
         )
-    daily   = pd.read_csv(daily_path,   parse_dates=["date"], index_col="date")
-    monthly = pd.read_csv(monthly_path, parse_dates=["date"], index_col="date") \
-              if os.path.exists(monthly_path) else pd.DataFrame()
+    daily = pd.read_csv(daily_path, parse_dates=["date"], index_col="date")
+
+    # Monthly CSV uses year+month integer columns (no 'date' column)
+    if os.path.exists(monthly_path):
+        _m = pd.read_csv(monthly_path)
+        _m.columns = [c.strip().lower() for c in _m.columns]
+        if "year" in _m.columns and "month" in _m.columns and "date" not in _m.columns:
+            _m["date"] = pd.to_datetime(
+                _m["year"].astype(str) + "-" + _m["month"].astype(str).str.zfill(2) + "-01"
+            )
+            _m = _m.drop(columns=["year", "month"])
+        else:
+            _m["date"] = pd.to_datetime(_m["date"], errors="coerce")
+        monthly = _m.set_index("date").sort_index()
+    else:
+        monthly = pd.DataFrame()
+
     print(f"  ERA5 daily  : {len(daily):,} days")
     print(f"  ERA5 monthly: {len(monthly):,} months")
     return daily, monthly
+
 
 
 # ---------------------------------------------------------------------------
