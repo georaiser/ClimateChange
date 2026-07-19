@@ -1,0 +1,4 @@
+class_id,class_name,n_pixels,area_km2,pct,mean_delta
+0,Vegetation Loss,153,82.9,1.1,-0.1104
+1,No Change,13676,7406.5,95.0,0.0059
+2,Vegetation Gain,571,309.2,4.0,0.1276

@@ -1,0 +1,6 @@
+class,km_pixels,mlc_pixels,agreement_pct,iou
+Water,720,720,100.0,1.0
+Snow/Ice,1688,1863,99.9,0.905
+Bare Rock,3415,3324,94.6,0.92
+Sparse Veg,4601,4372,93.9,0.928
+Dense Veg,3976,4121,98.9,0.945

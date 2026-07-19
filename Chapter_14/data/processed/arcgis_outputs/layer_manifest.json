@@ -1,0 +1,39 @@
+{
+  "project": "GeoCascade Chapter 14",
+  "target_crs": "EPSG:32718",
+  "bbox_wgs84": [
+    -73.5,
+    -51.5,
+    -72.5,
+    -50.5
+  ],
+  "aprx": "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\arcgis_pro\\GeoCascade_Ch14.aprx",
+  "layers": {
+    "Climate": [
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_01\\data\\processed\\real_data\\chirps_mean_annual_precip.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_01\\data\\processed\\climate_analysis\\temperature_surface.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_01\\data\\processed\\climate_maps\\precipitation_anomaly_clusters.png"
+    ],
+    "UHI_Temperature": [
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_01\\data\\processed\\uhi_mapping\\uhi_celsius.tif"
+    ],
+    "Satellite_Indices": [
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\ndvi.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\ndvi_2019.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\ndvi_2023.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\ndvi_change_2019_2023.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\ndvi_change_class.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\nbr.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\sentinel2_dos1_corrected.tif"
+    ],
+    "Terrain": [
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\arcgis_outputs\\dem_proxy.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\arcgis_outputs\\slope.tif"
+    ],
+    "Analysis": [
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\arcgis_outputs\\classified_land_cover.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\classified_land_cover.tif",
+      "D:\\00_AI_Aplications\\ClimateChange\\Chapter_14\\data\\processed\\envi_outputs\\classified_majority.tif"
+    ]
+  }
+}

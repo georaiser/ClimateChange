@@ -1,0 +1,124 @@
+{
+  "name": "GeoCascade Climate Pipeline",
+  "version": "1.0",
+  "created": "2026-07-19T00:09:55.497847",
+  "study_area": "Torres del Paine, Patagonia, Chile",
+  "bbox_wgs84": [
+    -73.5,
+    -51.5,
+    -72.5,
+    -50.5
+  ],
+  "steps": [
+    {
+      "id": "INPUT_RASTERS",
+      "label": "Input Rasters\n(Chapter 01-13 outputs)",
+      "type": "data",
+      "color": "#1a4a6b",
+      "outputs": [
+        "CHIRPS precip TIF",
+        "Temperature TIF",
+        "UHI TIF",
+        "DEM TIF"
+      ]
+    },
+    {
+      "id": "RECLASSIFY",
+      "label": "Reclassify\nPrecipitation\n(5 classes)",
+      "type": "tool",
+      "color": "#2d6a2d",
+      "arcgis_tool": "Spatial Analyst > Reclassify",
+      "params": {
+        "reclassType": "RANGE",
+        "classes": 5
+      }
+    },
+    {
+      "id": "SLOPE",
+      "label": "Compute Slope\n& Aspect\n(from DEM)",
+      "type": "tool",
+      "color": "#2d6a2d",
+      "arcgis_tool": "3D Analyst > Slope",
+      "params": {
+        "output_measurement": "DEGREE",
+        "method": "PLANAR"
+      }
+    },
+    {
+      "id": "WEIGHTED_OVERLAY",
+      "label": "Weighted Overlay\nClimate Vulnerability\n(4 inputs)",
+      "type": "tool",
+      "color": "#6a2d2d",
+      "arcgis_tool": "Spatial Analyst > Weighted Overlay",
+      "params": {
+        "weights": {
+          "temp_trend": 40,
+          "precip_anom": 30,
+          "slope": 20,
+          "ndvi_loss": 10
+        }
+      }
+    },
+    {
+      "id": "ZONAL_STATS",
+      "label": "Zonal Statistics\nAs Table\n(per land cover)",
+      "type": "tool",
+      "color": "#6a2d6a",
+      "arcgis_tool": "Spatial Analyst > Zonal Statistics as Table",
+      "params": {
+        "statistics_type": "ALL",
+        "ignore_nodata": "DATA"
+      }
+    },
+    {
+      "id": "OUTPUT",
+      "label": "Outputs\nCSV + GeoTIFF\n+ Map Layout",
+      "type": "data",
+      "color": "#1a4a6b",
+      "outputs": [
+        "vulnerability.tif",
+        "zonal_stats.csv",
+        "climate_atlas.png"
+      ]
+    }
+  ],
+  "connections": [
+    [
+      "INPUT_RASTERS",
+      "RECLASSIFY"
+    ],
+    [
+      "INPUT_RASTERS",
+      "SLOPE"
+    ],
+    [
+      "RECLASSIFY",
+      "WEIGHTED_OVERLAY"
+    ],
+    [
+      "SLOPE",
+      "WEIGHTED_OVERLAY"
+    ],
+    [
+      "INPUT_RASTERS",
+      "WEIGHTED_OVERLAY"
+    ],
+    [
+      "WEIGHTED_OVERLAY",
+      "ZONAL_STATS"
+    ],
+    [
+      "RECLASSIFY",
+      "OUTPUT"
+    ],
+    [
+      "WEIGHTED_OVERLAY",
+      "OUTPUT"
+    ],
+    [
+      "ZONAL_STATS",
+      "OUTPUT"
+    ]
+  ],
+  "arcgis_pro_import": "Analysis > ModelBuilder > File > Import > Import Python Toolbox -> GeoCascade.pyt"
+}

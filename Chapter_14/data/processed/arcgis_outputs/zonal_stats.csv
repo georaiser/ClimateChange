@@ -1,0 +1,6 @@
+class_id,class_name,n_pixels,mean_slope,std_slope,min_slope,max_slope
+0,Water,500,2.6,1.42,0.13,9.47
+1,Snow/Ice,1170,2.57,1.46,0.08,10.53
+2,Bare Rock,2360,2.62,1.4,0.03,10.39
+3,Sparse Veg,3157,2.68,1.5,0.07,11.04
+4,Dense Veg,2813,2.64,1.47,0.01,10.42
